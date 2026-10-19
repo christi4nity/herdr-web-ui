@@ -219,6 +219,18 @@ the child's environment before `exec` (`OMO_CODING_AGENT_DIR=… my-launcher`): 
 variable the process sets only in-process later may never appear in
 `/proc/<pid>/environ`, which reports the environment the kernel recorded at `exec`.
 
+## Process metadata probes
+
+Status and conversation discovery use bounded asynchronous process metadata probes.
+At most eight probe children run at once, with up to 64 FIFO waiters sharing the
+probe deadline. Cancellation keeps a child's slot occupied until that child exits.
+OmO's verified-holder rules and Codex's independent screen matching still apply;
+an unknown Codex birth disqualifies the resume hint, not screen or reported-thread evidence.
+
+Pending-input identity checks retain the synchronous `processStartedAt` helper and
+main's paste/Enter guards. On macOS this path can still block the event loop while
+`ps` runs; the pending-input portion of #1404 is deferred, not fixed by these probes.
+
 ## Conversation refresh
 
 The chat reads `/api/pane/conversation` after a `conversation-changed` WebSocket frame.

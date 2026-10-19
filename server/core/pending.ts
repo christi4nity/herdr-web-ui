@@ -16,7 +16,7 @@ import { HerdrError, paneProcessInfo, paneRead, paneSendKeys, paneSendText } fro
 import { claudeHeldIsGrey, codexQuestionsCollapsed, isClaudeHeld, heldCandidate, modelListWaits, noteSubmitted, parseInteractivePrompt, shownInputBox } from "../prompt.ts";
 import { secretPrompt } from "../../shared/secret-prompt.ts";
 import { PendingInputs, samePendingIdentity, type PendingIdentity, type PendingRecord } from "../pending-input.ts";
-import { processStartedAtAsync } from "../process-start.ts";
+import { processStartedAt } from "../process-start.ts";
 import { PendingRequestBook } from "../pending-requests.ts";
 import { interruptCodexSteering } from "../codex-steering.ts";
 import type { OmoStatus } from "../omo-status.ts";
@@ -86,50 +86,6 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
     if (facts.currentHeld) throw new HerdrError("attach_held", ATTACH_HELD_MESSAGE);
     if (!typingGuards.pendingLease(facts)) throw new HerdrError("input_not_ready", "The pending message's pane connection changed");
   }
-  async function pendingBirth(pid: number | null, pasted: boolean): Promise<number | null> {
-    if (pid === null) return null;
-    let birth = await processStartedAtAsync(pid);
-    // A transient metadata refusal after the paste is not proof of a replacement.
-    // Retry once without a delay, but never commit Enter while identity is unknown.
-    if (birth === null && pasted && process.platform !== "win32") birth = await processStartedAtAsync(pid);
-    return birth;
-  }
-  function unknownPendingIdentity(): never {
-    throw new HerdrError("pending_identity_unconfirmed", "The pane's process or session identity could not be confirmed; check the terminal before sending again");
-  }
-  function knownPendingIdentity(expected: PendingIdentity, actual: PendingIdentity): boolean {
-    return actual.processPid != null
-      && (process.platform === "win32" || actual.processBirth != null)
-      && !(expected.session != null && actual.session == null)
-      && !(expected.omoSession != null && actual.omoSession == null)
-      && !(expected.claudeSession != null && actual.claudeSession == null)
-      && samePendingIdentity(expected, actual);
-  }
-  async function finalPendingIdentity(paneId: string, expected: PendingIdentity, pasted: boolean): Promise<PendingIdentity> {
-    const info = await paneProcessInfo(paneId);
-    const pid = info?.foreground_processes?.[0]?.pid ?? null;
-    const birth = await pendingBirth(pid, pasted);
-    // Birth probing yields. Re-read the pane, Claude's current PID record and the
-    // foreground afterwards, not a session read concurrently with that birth probe.
-    const pane = (await clientSnapshot()).panes.find((candidate) => candidate.pane_id === paneId);
-    const claudeSession = expected.agent === "claude" ? await claudeForegroundSession(info?.foreground_processes ?? []) : null;
-    const after = await paneProcessInfo(paneId);
-    const final: PendingIdentity | null = pane ? {
-      ...pendingIdentity(pane), processPid: after?.foreground_processes?.[0]?.pid ?? null,
-      processBirth: birth, omoSession: omo.sessionOf(paneId)?.sessionId ?? null, claudeSession,
-    } : null;
-    if (!final || pid === null || final.processPid !== pid) {
-      throw new HerdrError("pending_target_changed", "The pane's terminal or agent session changed; review the message before sending it again");
-    }
-    if ((birth === null && process.platform !== "win32")
-      || (expected.session != null && final.session == null)
-      || (expected.claudeSession != null && final.claudeSession == null)
-      || (expected.omoSession != null && final.omoSession == null)) unknownPendingIdentity();
-    if (!knownPendingIdentity(expected, final)) {
-      throw new HerdrError("pending_target_changed", "The pane's terminal or agent session changed; review the message before sending it again");
-    }
-    return final;
-  }
   async function pendingContext(owner: Client, paneId: string, lease: PendingLease, identity?: PendingIdentity, pasted = false): Promise<{ pane: HerdrPane; identity: PendingIdentity; working: boolean; screen: string }> {
     authorizePending(owner, paneId, lease);
     // The same normalized snapshot the client sees includes a known Codex finish that
@@ -140,38 +96,22 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
     const pid = info?.foreground_processes?.[0]?.pid ?? null;
     const base = pendingIdentity(pane);
     const current: PendingIdentity = {
-      ...base, processPid: pid, processBirth: await pendingBirth(pid, pasted),
+      ...base, processPid: pid, processBirth: pid === null ? null : processStartedAt(pid),
       omoSession: omo.sessionOf(paneId)?.sessionId ?? null,
       // Claude's own PID record says which session it runs, also without herdr's hook
       claudeSession: base.agent === "claude" ? await claudeForegroundSession(info?.foreground_processes ?? []) : null,
     };
-    // Birth probing yields. Re-read both herdr identities before any write so a replacement
-    // that kept the attachment lease cannot inherit the old process's queued input.
-    const refreshedPane = (await clientSnapshot()).panes.find((candidate) => candidate.pane_id === paneId);
-    const refreshedInfo = await paneProcessInfo(paneId);
-    const refreshedPid = refreshedInfo?.foreground_processes?.[0]?.pid ?? null;
-    const [refreshedBirth, refreshedClaudeSession] = await Promise.all([
-      pendingBirth(refreshedPid, pasted),
-      base.agent === "claude" ? claudeForegroundSession(refreshedInfo?.foreground_processes ?? []) : null,
-    ]);
-    const refreshed: PendingIdentity | null = refreshedPane ? {
-      ...pendingIdentity(refreshedPane), processPid: refreshedPid, processBirth: refreshedBirth,
-      omoSession: omo.sessionOf(paneId)?.sessionId ?? null, claudeSession: refreshedClaudeSession,
-    } : null;
-    // Compare both observations to the saved lease identity directly: an unknown intermediate
-    // probe must never hide a known old birth from a known replacement birth.
-    if ((current.processBirth != null && refreshedBirth === null)
-      || (identity?.processBirth != null && (current.processBirth === null || refreshedBirth === null))) unknownPendingIdentity();
-    if (refreshedPid !== pid || !refreshed
-      || !samePendingIdentity(current, refreshed) || (identity && !samePendingIdentity(identity, refreshed))) {
-      throw new HerdrError("pending_target_changed", "The pane's terminal or agent session changed; review the message before sending it again");
-    }
-    // The process probes yielded; authority may have changed while they ran.
-    authorizePending(owner, paneId, lease);
     if (identity && !samePendingIdentity(identity, current)) {
       throw new HerdrError("pending_target_changed", "The pane's terminal or agent session changed; review the message before sending it again");
     }
-    current.processBirth ??= refreshedBirth;
+    if (identity) {
+      // Keep newly learned parts so a replacement before Enter is checked against them too.
+      identity.session ??= current.session;
+      identity.processPid ??= current.processPid;
+      identity.processBirth ??= current.processBirth;
+      identity.omoSession ??= current.omoSession;
+      identity.claudeSession ??= current.claudeSession;
+    }
     // the live screen, not the viewport: a pane scrolled into its history still draws its next
     // menu or password prompt at the bottom (server/prompt.ts liveScreen)
     const screen = (await paneRead({ paneId, source: "detection", format: "text" })).text;
@@ -193,20 +133,8 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
     if (current.agent && !["working", "idle", "done"].includes(pane.agent_status) && !collapsed) {
       throw new HerdrError("agent_not_ready", "The agent's current input state is not known");
     }
-    const finalIdentity = await finalPendingIdentity(paneId, refreshed, pasted);
-    if (identity && !knownPendingIdentity(identity, finalIdentity)) {
-      throw new HerdrError("pending_target_changed", "The pane's terminal or agent session changed; review the message before sending it again");
-    }
-    if (identity) {
-      // Preserve only the final observations for the subsequent pre-Enter check.
-      identity.session ??= finalIdentity.session;
-      identity.processPid ??= finalIdentity.processPid;
-      identity.processBirth ??= finalIdentity.processBirth;
-      identity.omoSession ??= finalIdentity.omoSession;
-      identity.claudeSession ??= finalIdentity.claudeSession;
-    }
     authorizePending(owner, paneId, lease);
-    return { pane, identity: finalIdentity, working: current.agent !== null && (pane.agent_status === "working" || collapsed), screen };
+    return { pane, identity: current, working: current.agent !== null && (pane.agent_status === "working" || collapsed), screen };
   }
   /**
    * The live screen for claudeInputDraft, and the viewport's colors when viewportShowsLive verifies
@@ -235,9 +163,6 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       if (context.identity.agent === "claude") await freeClaudeBox(paneId, context.working, () => authorizePending(owner, paneId, lease), arrivedAt + (options.submitDeadlineMs ?? SUBMIT_DEADLINE_MS));
       else if (context.identity.agent === "hermes") await freeHermesInput(paneId, context.identity);
       if (Date.now() - arrivedAt > (options.submitDeadlineMs ?? SUBMIT_DEADLINE_MS)) throw new HerdrError("submit_timeout", "The pending message waited too long; nothing was typed");
-      // Draft checks also yield. Preserve main's connect-time lease guard, but do not
-      // carry their earlier process/session evidence into this paste.
-      await finalPendingIdentity(paneId, context.identity, false);
       authorizePending(owner, paneId, lease);
       // asked again right before herdr is written to: its connect is awaited (#666)
       const allowed = (): boolean => {
@@ -277,11 +202,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       noteSubmitted(paneId, text);
       return { ok: true };
     } catch (error) {
-      const fault = wrote
-        ? error instanceof HerdrError && error.code === "pending_identity_unconfirmed"
-          ? { code: "submit_unconfirmed", message: "The message was pasted, but the pane's identity could not be confirmed. Enter was not sent; check the terminal before sending again." }
-          : { code: "submit_changed", message: "Pending-message delivery could not be confirmed. Check the terminal before sending again." }
-        : pendingFault(error);
+      const fault = wrote ? { code: "submit_changed", message: "Pending-message delivery could not be confirmed. Check the terminal before sending again." } : pendingFault(error);
       if (automatic && !wrote && fault.code === "agent_blocked") pending.observe(paneId, "blocked", mark);
       return { ok: false, ...fault };
     }
@@ -289,7 +210,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
   async function dispatchPending(item: PendingItem, automatic: boolean, arrivedAt: number, interruptWorkingCodex = false): Promise<SubmitReply> {
     const reply = await dispatchPendingText(item.owner, item.paneId, item.message.text, item.lease, item.identity,
       automatic, arrivedAt, (working, restarting) => pending.committing(item, working, restarting), interruptWorkingCodex);
-    pending.settle(item, reply.ok ? undefined : { code: reply.code!, message: reply.message! }, ["submit_changed", "submit_unconfirmed"].includes(reply.code ?? ""),
+    pending.settle(item, reply.ok ? undefined : { code: reply.code!, message: reply.message! }, reply.code === "submit_changed",
       automatic && ["pending_wait", "agent_blocked"].includes(reply.code ?? ""));
     return reply;
   }
@@ -461,7 +382,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
             }, message.resend_generation);
           // A saved copy may already have completed this ID on another connection.
           if (!dispatched && pending.get(client, item.paneId, item.message.id) === item && pending.claim(item, false))
-            pending.settle(item, reply.ok ? undefined : { code: reply.code!, message: reply.message! }, ["submit_changed", "submit_unconfirmed"].includes(reply.code ?? ""));
+            pending.settle(item, reply.ok ? undefined : { code: reply.code!, message: reply.message! }, reply.code === "submit_changed");
           return reply;
         });
         result(answer);

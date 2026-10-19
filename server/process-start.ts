@@ -88,8 +88,9 @@ export function psOutput(args: string[], timeoutMs = PROBE_TIMEOUT_MS, env?: Rec
 }
 
 /**
- * Legacy synchronous process reading for synchronous fixture helpers only. Runtime paths use
- * processStartedAtAsync so macOS process-table stalls cannot block Bun's event loop.
+ * Synchronous process reading for pending-input identity checks and fixture helpers.
+ * Status and conversation paths use processStartedAtAsync. Pending input still blocks
+ * the event loop during macOS process-table reads; migrating that path is deferred.
  */
 export function processStartedAt(pid: number): number | null {
   if (process.platform === "darwin") {
