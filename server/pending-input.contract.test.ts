@@ -276,6 +276,72 @@ describe("connection-owned pending input", () => {
     } finally { gate.resolve(); probe.mockRestore(); info.mockRestore(); }
   }, 30_000);
 
+  for (const change of ["gone", "birth", "unknown-birth", "session", "unknown-session"] as const) it(`holds the paste for fresh final ${change} evidence`, async () => {
+    const f = await setup(`fresh-final-${change}`, change.includes("session") ? "claude" : "codex");
+    const original = await herdrClient.paneProcessInfo(f.pane);
+    const foreground = original?.foreground_processes?.[0];
+    if (!foreground) throw new Error("No foreground recorder");
+    let changed = false;
+    const session = spyOn(claudeStore, "claudeForegroundSession").mockImplementation(async () =>
+      changed ? change === "unknown-session" ? null : "session-B" : "session-A");
+    const message = await f.queue(14080, "fresh final identity must stay unsent");
+    const gate = Promise.withResolvers<void>();
+    const reached = Promise.withResolvers<void>();
+    const born = processStart.processStartedAt(foreground.pid);
+    if (born === null) throw new Error("Recorder birth unknown");
+    let calls = 0;
+    const probe = spyOn(processStart, "processStartedAtAsync").mockImplementation(async () => {
+      const observed = changed && change === "unknown-birth" ? null : change === "birth" && changed ? born + 10_000 : born;
+      if (++calls === 2) { reached.resolve(); await gate.promise; }
+      return observed;
+    });
+    const info = spyOn(herdrClient, "paneProcessInfo").mockImplementation(async () => ({
+      ...original, foreground_processes: change === "gone" && changed ? [] : [foreground],
+    }));
+    try {
+      const settled = f.socket.event((frame) => frame.removed?.some((entry) => entry.id === message.id) === true
+        || frame.messages.some((entry) => entry.id === message.id && ["held", "uncertain"].includes(entry.state)));
+      await f.state("idle");
+      await reached.promise;
+      changed = true;
+      gate.resolve();
+      const outcome = await settled;
+      expect(f.bytes()).toBe("");
+      expect(outcome.messages).toContainEqual(expect.objectContaining({ id: message.id, state: "held" }));
+    } finally { gate.resolve(); probe.mockRestore(); info.mockRestore(); session.mockRestore(); }
+  }, 30_000);
+
+  for (const recovers of [false, true]) it(`${recovers ? "retries transient" : "reports unconfirmed"} identity after paste without guessing Enter`, async () => {
+    const f = await setup("post-paste-unknown", "codex");
+    const message = await f.queue(14081, "already pasted");
+    let pasted = false;
+    let attempts = 0;
+    const originalSend = herdrClient.paneSendText;
+    const sending = spyOn(herdrClient, "paneSendText").mockImplementation(async (...args) => {
+      await originalSend(...args);
+      pasted = true;
+    });
+    const birth = processStart.processStartedAtAsync;
+    const probe = spyOn(processStart, "processStartedAtAsync").mockImplementation(async (pid) =>
+      pasted && (!recovers || ++attempts === 1) ? null : birth(pid));
+    try {
+      const settled = f.socket.event((frame) => frame.removed?.some((entry) => entry.id === message.id) === true
+        || frame.messages.some((entry) => entry.id === message.id && entry.state === "uncertain"));
+      await f.state("idle");
+      const outcome = await settled;
+      if (recovers) {
+        expect(outcome.removed).toContainEqual({ id: message.id, outcome: "sent" });
+        await f.waitBytes("\r");
+        expect(f.bytes()).toBe(`${paste("already pasted")}\r`);
+      } else {
+        expect(outcome.messages).toContainEqual(expect.objectContaining({
+          id: message.id, error: expect.objectContaining({ code: "submit_unconfirmed" }),
+        }));
+        expect(f.bytes()).toBe(paste("already pasted"));
+      }
+    } finally { sending.mockRestore(); probe.mockRestore(); }
+  }, 30_000);
+
   it("delivers to an unchanged target while status probes occupy the child ceiling", async () => {
     const f = await setup("probe-saturation", "codex", "› Ask Codex to do anything\n");
     const message = await f.queue(14073, "unchanged saturated target");
@@ -304,10 +370,12 @@ describe("connection-owned pending input", () => {
   it("retains a birth learned by the second queue probe against PID reuse", async () => {
     const f = await setup("learned-birth", "codex", "› Ask Codex to do anything\n");
     let calls = 0;
+    let queued = false;
     const probe = spyOn(processStart, "processStartedAtAsync").mockImplementation(async () =>
-      ++calls === 1 ? null : calls === 2 ? 100_000 : 110_000);
+      queued ? 110_000 : ++calls === 1 ? null : 100_000);
     try {
       const message = await f.queue(14072, "learned birth must stay unsent");
+      queued = true;
       const settled = f.socket.event((frame) => frame.removed?.some((entry) => entry.id === message.id) === true
         || frame.messages.some((entry) => entry.id === message.id && entry.state === "held"));
       await f.state("idle");
