@@ -41,7 +41,7 @@ describe("omo skill roots", () => {
     const rpc = spyOn(herdr, "herdrRpc").mockResolvedValue({
       process_info: { foreground_processes: [{ pid: -1, argv: ["omo"] }] },
     });
-    const identity = spyOn(omo, "omoProcessIdentity").mockReturnValue({ agentDir, heldIds: [], custom: false });
+    const identity = spyOn(omo, "omoProcessIdentity").mockResolvedValue({ agentDir, heldIds: [], custom: false });
     try {
       expect((await paneProcessRoots("omo-cwd-fixture", "omo")).omo?.agentDir).toBe(agentDir);
     } finally {
@@ -60,7 +60,7 @@ describe("pane process roots", () => {
           { pid: 102, argv: [`C:\\tools\\${agent}.exe`], cwd: "/agent" },
         ] },
       });
-      const identity = spyOn(omo, "omoProcessIdentity").mockReturnValue(null);
+      const identity = spyOn(omo, "omoProcessIdentity").mockResolvedValue(null);
       const environ = spyOn(omo, "processEnviron").mockReturnValue(["AGENT_HOME=/fixture"]);
       try {
         expect(await paneProcessRoots("process-fixture", agent)).toEqual({
@@ -84,7 +84,7 @@ describe("pane process roots", () => {
         { pid: 102, argv: ["node", "/tools/codex.js"], cwd: "/repo" },
       ] },
     });
-    const identity = spyOn(omo, "omoProcessIdentity").mockReturnValue(null);
+    const identity = spyOn(omo, "omoProcessIdentity").mockResolvedValue(null);
     const environ = spyOn(omo, "processEnviron").mockReturnValue(null);
     try {
       expect((await paneProcessRoots("runtime-fixture", "codex")).pid).toBe(102);

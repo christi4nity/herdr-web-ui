@@ -64,5 +64,5 @@ export async function ompHeldTranscript(paneId: string, cwd: string, home = proc
   }
   if (agentDir === null) return null;
   // a probed process's environment stands in for gjcTerminal's /proc read, which could block too
-  return heldTranscript(agentDir, cwd, pids, (pid) => environs.get(pid)).path;
+  return (await heldTranscript(agentDir, cwd, pids, (pid) => environs.get(pid))).path;
 }

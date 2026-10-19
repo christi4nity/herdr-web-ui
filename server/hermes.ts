@@ -1,5 +1,4 @@
 import { Database } from "bun:sqlite";
-import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
@@ -10,7 +9,7 @@ import { herdrRpc } from "./herdr/client.ts";
 import { answerVersion, ConversationNotStarted, ConversationUnavailable, type ConversationPage, HistoryChanged, type RecognizedConversation, TRANSCRIPT_WINDOW_BYTES } from "./conversation.ts";
 import { toolSummary } from "./transcript-records.ts";
 import { TOOL_OUTPUT_CHARS, trimOutput } from "./tool-output.ts";
-import { processStartedAt } from "./process-start.ts";
+import { processStartedAtAsync, psOutput } from "./process-start.ts";
 import { hermesSkillPrompt } from "./skill-activity.ts";
 
 export interface HermesMessageRow {
@@ -134,7 +133,7 @@ export function isHermesProcess(entry: { name?: string; argv0?: string; argv?: r
 }
 
 /** Resolves process terminal identity to Hermes breadcrumb filename convention. */
-export function hermesTerminalId(pid: number): string | null {
+export async function hermesTerminalId(pid: number): Promise<string | null> {
   if (!Number.isSafeInteger(pid) || pid <= 0) return null;
   try {
     if (process.platform === "linux") {
@@ -143,9 +142,7 @@ export function hermesTerminalId(pid: number): string | null {
       return `tty-${tty.slice(1).replaceAll("/", "-")}`;
     }
     if (process.platform === "darwin") {
-      const output = execFileSync("ps", ["-p", String(pid), "-o", "tty="], {
-        encoding: "utf8", timeout: 1500, maxBuffer: 4096, stdio: ["ignore", "pipe", "ignore"],
-      }).trim();
+      const output = (await psOutput(["-p", String(pid), "-o", "tty="]))?.trim();
       if (!output || output === "??") return null;
       const device = output.startsWith("/dev/") ? output.slice(5) : output.startsWith("ttys") ? `dev-${output}` : output;
       return `tty-${device.replaceAll("/", "-")}`;
@@ -209,8 +206,7 @@ export async function hermesTranscriptForPane(
   const hermesHome = configuredHome ?? processHome ?? defaultHermesHome();
 
   if (sessionId === null && hermesProcess !== undefined) {
-    const termId = hermesTerminalId(hermesProcess.pid);
-    const startedAt = processStartedAt(hermesProcess.pid);
+    const [termId, startedAt] = await Promise.all([hermesTerminalId(hermesProcess.pid), processStartedAtAsync(hermesProcess.pid)]);
     if (termId !== null && startedAt !== null) {
       sessionId = hermesBreadcrumbSession(hermesHome, termId, cwd, startedAt);
     }

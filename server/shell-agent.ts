@@ -85,7 +85,9 @@ export async function startShellAgent(kind: string, paneId: string, args: string
   const deadline = Date.now() + (options.timeoutMs ?? 60_000);
   while (Date.now() < deadline) {
     const info = await processInfo(paneId);
-    if (info?.process_info?.foreground_processes?.some((entry) => kind === "omo" ? omoProcessIdentity(entry, "", process.env["HOME"] ?? "") !== null : isProcess(entry.argv ?? []))) return;
+    if ((await Promise.all(info?.process_info?.foreground_processes?.map(async (entry) => kind === "omo"
+      ? await omoProcessIdentity(entry, "", process.env["HOME"] ?? "") !== null
+      : isProcess(entry.argv ?? [])) ?? [])).some(Boolean)) return;
     const shellPid = info?.process_info?.shell_pid;
     // the table query never outlasts what is left of the start's own time
     if (windows && typeof shellPid === "number" && descendantArgv(await windowsProcessTable(Math.max(500, Math.min(10_000, deadline - Date.now()))), shellPid).some(isProcess)) return;

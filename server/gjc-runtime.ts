@@ -3,7 +3,6 @@
  * process to its exact saved session. Shared terminal/store helpers below are also used by omp.
  */
 
-import { execFileSync } from "node:child_process";
 import { closeSync, fstatSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync, statSync } from "node:fs";
 import nodePath, { join, type PlatformPath } from "node:path";
 import { isDeepStrictEqual } from "node:util";
@@ -11,7 +10,7 @@ import { isDeepStrictEqual } from "node:util";
 import { GjcSdkLookupError, gjcSdkTranscript } from "./gjc-sdk.ts";
 import { captureGjcIndex, gjcIndexUnchanged, type GjcIndexStamp } from "./gjc-index.ts";
 import { herdrRpc } from "./herdr/client.ts";
-import { processStartedAt } from "./process-start.ts";
+import { processStartedAtAsync, psOutput } from "./process-start.ts";
 import { descendantArgv, windowsProcessTable, type ProcessRow } from "./windows-processes.ts";
 
 export interface GjcTerminal { id: string; startedAt: number }
@@ -101,11 +100,11 @@ export function storeRelative(root: string, file: string, paths: PlatformPath = 
  * GJC's native terminal-sessions key, not the most recently written cwd session. `environ`, when
  * given (null: unreadable), stands in for /proc/<pid>/environ, which is then never read here.
  */
-export function gjcTerminal(pid: number, environ?: readonly string[] | null): GjcTerminal | null {
+export async function gjcTerminal(pid: number, environ?: readonly string[] | null): Promise<GjcTerminal | null> {
   if (!Number.isSafeInteger(pid) || pid <= 0) return null;
   try {
     if (process.platform === "linux") {
-      const startedAt = processStartedAt(pid);
+      const startedAt = await processStartedAtAsync(pid);
       if (startedAt === null) return null;
       const env = environ === undefined ? readFileSync(`/proc/${pid}/environ`, "utf8").split("\0") : environ ?? [];
       const tmux = env.find((word) => word.startsWith("TMUX="))?.slice(5);
@@ -116,13 +115,10 @@ export function gjcTerminal(pid: number, environ?: readonly string[] | null): Gj
       return { id: tty.slice(5).replaceAll("/", "-"), startedAt };
     }
     if (process.platform === "darwin") {
-      // lstart is local time without a zone: print it in the zone Date.parse reads it in,
-      // which is not always $TZ (bun test runs in UTC without setting it)
+      // lstart is local time without a zone: retain the former C locale and Date.parse zone.
       const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-      const output = execFileSync("ps", ["-p", String(pid), "-o", "tty=", "-o", "lstart="], {
-        encoding: "utf8", timeout: 1500, maxBuffer: 4096, env: { ...process.env, LC_ALL: "C", TZ: zone }, stdio: ["ignore", "pipe", "ignore"],
-      });
-      return parseGjcPs(output);
+      const output = await psOutput(["-p", String(pid), "-o", "tty=", "-o", "lstart="], 1500, { ...process.env, LC_ALL: "C", TZ: zone });
+      return output === null ? null : parseGjcPs(output);
     }
   } catch { /* process exited or its terminal metadata is unavailable */ }
   return null;
@@ -201,14 +197,14 @@ export function terminalBreadcrumb(agentDir: string, cwd: string, terminalId: st
  * exactly one transcript qualifies; `found` says how many did. `environOf` supplies a process's
  * environment already read elsewhere, so none is read here; undefined for a pid reads it.
  */
-export function heldTranscript(agentDir: string, cwd: string, pids: readonly number[], environOf?: (pid: number) => readonly string[] | null | undefined): { path: string | null; found: number } {
+export async function heldTranscript(agentDir: string, cwd: string, pids: readonly number[], environOf?: (pid: number) => readonly string[] | null | undefined): Promise<{ path: string | null; found: number }> {
   let root: string;
   try { root = realpathSync(join(agentDir, "sessions")); }
   catch { return { path: null, found: 0 }; }
   const open = new Set<string>();
   const breadcrumbs = new Set<string>();
   for (const pid of pids) {
-    const terminal = gjcTerminal(pid, environOf?.(pid));
+    const terminal = await gjcTerminal(pid, environOf?.(pid));
     if (terminal) {
       const path = terminalBreadcrumb(agentDir, cwd, terminal.id, terminal.startedAt);
       if (path) breadcrumbs.add(path);
@@ -271,7 +267,7 @@ type GjcTranscriptOptions = {
   purpose?: "chat" | "status";
   platform?: string;
   processInfo?: (paneId: string) => Promise<GjcPaneProcessInfo | null>;
-  processBirth?: (pid: number) => number | null;
+  processBirth?: (pid: number) => number | null | Promise<number | null>;
   sdkTranscript?: typeof gjcSdkTranscript;
   readProcessTable?: () => Promise<ProcessRow[]>;
   now?: () => number;
@@ -371,7 +367,7 @@ async function lookupGjcTranscript(
   ).catch(() => null));
   const sdkTranscript = options.sdkTranscript ?? gjcSdkTranscript;
   const readProcessTable = options.readProcessTable ?? windowsProcessTable;
-  const processBirth = options.processBirth ?? processStartedAt;
+  const processBirth = options.processBirth ?? processStartedAtAsync;
   const now = options.now ?? Date.now;
   // macOS reads a start as now minus whole elapsed seconds, so two reads of one process
   // differ by up to a second.
@@ -402,7 +398,7 @@ async function lookupGjcTranscript(
       const argv = Array.isArray(process.argv) ? process.argv.map(String) : [];
       if (!isGjcProcess(argv)) continue;
       if (typeof process.pid !== "number" || !Number.isSafeInteger(process.pid) || process.pid <= 0) return null;
-      const started = processBirth(process.pid);
+      const started = await processBirth(process.pid);
       if (started === null || !Number.isFinite(started)) return null;
       const previous = seen.get(process.pid);
       if (previous !== undefined && !sameBirth(previous, started)) return null;

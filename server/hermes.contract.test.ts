@@ -358,7 +358,8 @@ it.skipIf(process.platform !== "linux" && process.platform !== "darwin")("select
   ]);
   hermesStore(fallback, [{ id: fallbackSession, answer: "Answer from the bridge default" }]);
   const executable = join(root, "hermes");
-  copyFileSync("/bin/sleep", executable);
+  // macOS kills a copied platform-signed /bin/sleep before herdr can inspect it.
+  copyFileSync(process.platform === "darwin" ? process.execPath : "/bin/sleep", executable);
   chmodSync(executable, 0o755);
   const workspaces: string[] = [];
   const servers: RunningServer[] = [];
@@ -368,8 +369,9 @@ it.skipIf(process.platform !== "linux" && process.platform !== "darwin")("select
     workspaces.push(created.workspace.workspace_id);
     const target = created.root_pane.pane_id;
     const quotedHome = home.replaceAll("'", "'\\''");
+    const arguments_ = process.platform === "darwin" ? `-e 'await Bun.sleep(60000)'` : "60";
     const quotedExecutable = executable.replaceAll("'", "'\\''");
-    await herdrRpc("pane.send_text", { pane_id: target, text: `HERMES_HOME='${quotedHome}' '${quotedExecutable}' 60\n` });
+    await herdrRpc("pane.send_text", { pane_id: target, text: `HERMES_HOME='${quotedHome}' '${quotedExecutable}' ${arguments_}\n` });
     // A real herdr process table has no completion signal; poll its observable process list to a deadline.
     for (let attempt = 0; attempt < 100; attempt++) {
       const info = await herdrRpc<{
@@ -396,7 +398,7 @@ it.skipIf(process.platform !== "linux" && process.platform !== "darwin")("select
       agent_session_id: reportedSession, session_start_source: "startup",
     });
     expect((await sessionSnapshot()).panes.find((pane) => pane.pane_id === owned.paneId)?.agent_session?.agent).toBe("hermes");
-    const terminalId = hermesTerminalId(owned.pid);
+    const terminalId = await hermesTerminalId(owned.pid);
     expect(terminalId).not.toBeNull();
     const markerDir = join(profile, "terminal-sessions");
     mkdirSync(markerDir, { recursive: true });
@@ -427,7 +429,7 @@ it.skipIf(process.platform !== "linux" && process.platform !== "darwin")("select
       if (!identified) await Bun.sleep(25);
     }
     expect(identified).toBeTrue();
-    const breadcrumbTerminal = hermesTerminalId(breadcrumb.pid);
+    const breadcrumbTerminal = await hermesTerminalId(breadcrumb.pid);
     expect(breadcrumbTerminal).not.toBeNull();
     const breadcrumbMarker = join(profile, "terminal-sessions", breadcrumbTerminal!);
     writeFileSync(breadcrumbMarker, JSON.stringify({ session_id: profileSession, cwd: root, ts: 0 }));

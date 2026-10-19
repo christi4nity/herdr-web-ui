@@ -185,17 +185,69 @@ describe("connection-owned pending input", () => {
     expect(bytes).not.toContain("MSG-FOR-SESSION-1"); // regression: SESSION2 receives nothing
   }, 30_000);
 
+  for (const change of ["foreground", "lease", "session", "birth", "unknown-birth"] as const) it(`holds input when ${change} changes during an awaited birth probe`, async () => {
+    const f = await setup(`probe-race-${change}`, "claude", "SESSION1", {}, change === "foreground");
+    const foreground = (await herdrClient.paneProcessInfo(f.pane))?.foreground_processes?.[0];
+    if (!foreground) throw new Error("No foreground recorder");
+    const message = await f.queue(1404, "must stay unsent");
+    let release!: () => void;
+    let reached!: () => void;
+    const wait = new Promise<void>((resolve) => { release = resolve; });
+    const atProbe = new Promise<void>((resolve) => { reached = resolve; });
+    const birth = processStart.processStartedAtAsync;
+    let held = false;
+    let birthChanged = false;
+    const probe = spyOn(processStart, "processStartedAtAsync").mockImplementation(async (pid) => {
+      const result = await birth(pid);
+      if (pid === foreground.pid && birthChanged && result !== null) return result + 1500;
+      if (change !== "session" && pid === foreground.pid && !held) { held = true; reached(); await wait; if (change === "unknown-birth") return null; }
+      return result;
+    });
+    let sessionId = "before";
+    const session = spyOn(claudeStore, "claudeForegroundSession").mockImplementation(async () => {
+      const value = sessionId;
+      if (change === "session" && !held) { held = true; reached(); await wait; }
+      return value;
+    });
+    try {
+      // Record the initial session before delaying its read on the next delivery attempt.
+      const settled = f.socket.event((frame) => frame.messages.some((entry) => entry.id === message.id && entry.state === "held"));
+      await f.state("idle");
+      await Promise.race([atProbe, Bun.sleep(5000).then(() => { throw new Error("birth probe not reached"); })]);
+      expect((await fetch(`http://localhost:${f.port}/api/health`)).ok).toBeTrue();
+      if (change === "foreground") {
+        globalThis.process.kill(foreground.pid, "SIGKILL");
+        const deadline = Date.now() + 5000;
+        while (!existsSync(f.replacementLog)) {
+          if (Date.now() >= deadline) throw new Error("replacement did not start");
+          await Bun.sleep(20);
+        }
+      } else if (change === "lease") {
+        f.socket.send({ type: "role", mode: "observe" });
+        await f.socket.wait((frame) => frame.type === "role-ack" && frame.mode === "observe");
+        f.socket.send({ type: "role", mode: "interact" });
+        await f.socket.wait((frame) => frame.type === "role-ack" && frame.mode === "interact");
+      } else if ((change === "birth" || change === "unknown-birth")) birthChanged = true;
+      else sessionId = "after";
+      release();
+      const outcome = await settled;
+      expect(outcome.messages).toContainEqual(expect.objectContaining({ id: message.id, state: "held" }));
+      expect(f.bytes()).toBe("");
+      if (change === "foreground") expect(readFileSync(f.replacementLog, "utf8")).toBe("");
+    } finally { release(); probe.mockRestore(); session.mockRestore(); }
+  }, 30_000);
+
   it("delivers to the same hookless process with unchanged pid and birth (control #540)", async () => {
     const f = await setup("same-process");
     const before = (await herdrClient.paneProcessInfo(f.pane))?.foreground_processes?.[0];
     if (!before) throw new Error("No foreground recorder");
-    const birth = processStart.processStartedAt(before.pid);
+    const birth = await processStart.processStartedAtAsync(before.pid);
     const message = await f.queue(541, "same process");
     const removed = f.socket.event((frame) => frame.removed?.some((entry) => entry.id === message.id) === true);
     await f.state("idle"); await removed; await f.waitBytes("\r");
     const after = (await herdrClient.paneProcessInfo(f.pane))?.foreground_processes?.[0];
     expect(after?.pid).toBe(before.pid); // control
-    const afterBirth = processStart.processStartedAt(before.pid);
+    const afterBirth = await processStart.processStartedAtAsync(before.pid);
     if (globalThis.process.platform === "darwin" && birth !== null && afterBirth !== null) {
       expect(Math.abs(afterBirth - birth)).toBeLessThanOrEqual(1000); // control: macOS precision
     } else expect(afterBirth).toBe(birth); // control: Linux birth is exact
@@ -208,10 +260,10 @@ describe("connection-owned pending input", () => {
       const process = (await herdrClient.paneProcessInfo(f.pane))?.foreground_processes?.[0];
       if (!process) throw new Error("No foreground recorder");
       let reading = 100_000;
-      const birth = processStart.processStartedAt;
+      const birth = processStart.processStartedAtAsync;
       const compare = pendingInput.samePendingIdentity;
       // Supply macOS's two observations without changing the real recorder, RPCs or delivery.
-      const startedAt = spyOn(processStart, "processStartedAt").mockImplementation((pid) => pid === process.pid ? reading : birth(pid));
+      const startedAt = spyOn(processStart, "processStartedAtAsync").mockImplementation(async (pid) => pid === process.pid ? reading : await birth(pid));
       const platform = spyOn(pendingInput, "samePendingIdentity").mockImplementation((before, after) => compare(before, after, "darwin"));
       try {
         const message = await f.queue(544, `darwin birth ${drift}`);

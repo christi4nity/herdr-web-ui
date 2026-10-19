@@ -7,7 +7,7 @@ import { homedir } from "node:os";
 import nodePath, { isAbsolute, join, type PlatformPath } from "node:path";
 import type { ConversationPart, ConversationTurn, HerdrPane } from "../shared/protocol.ts";
 import { patchFiles, patchText } from "../shared/patch.ts";
-import { processStartedAt, processStartUpperBound } from "./process-start.ts";
+import { processStartedAtAsync, processStartUpperBoundAsync } from "./process-start.ts";
 import { codexImageParts } from "./codex-images.ts";
 import { codexReadCall, codexReadSkills, selectedSkill } from "./skill-activity.ts";
 import { trimOutput } from "./tool-output.ts";
@@ -1314,7 +1314,7 @@ async function shortThreadFromProcess(
   paneId: string, cwd: string, home: string, screen: string,
   processes: readonly { pid: number }[], panes?: HerdrPane[],
 ): Promise<string | null> {
-  const starts = processes.map(({ pid }) => processStartUpperBound(pid));
+  const starts = await Promise.all(processes.map(({ pid }) => processStartUpperBoundAsync(pid)));
   if (starts.length === 0 || starts.some((start) => start === null || !Number.isFinite(start))) return null;
   const notBefore = Math.min(...starts as number[]);
   let db: Database | undefined;
@@ -1476,7 +1476,8 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
       // one no other pane shows counts too: then the chat says it cannot tell, rather
       // than show the wrong conversation). Without a start time, since the resumed
       // thread was last updated.
-      const startedAt = Math.min(...codexProcesses.map((process) => processStartedAt(process.pid) ?? Infinity));
+      const starts = await Promise.all(codexProcesses.map((process) => processStartedAtAsync(process.pid)));
+      const startedAt = Math.min(...starts.map((start) => start ?? Infinity));
       const since = Number.isFinite(startedAt)
         ? Math.floor(startedAt / 1000)
         : (db.query<{ updated_at: number }, [string]>("SELECT updated_at FROM threads WHERE id = ?").get(resumed)?.updated_at ?? 0);

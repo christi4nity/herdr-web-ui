@@ -3,7 +3,7 @@ import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { HerdrPane } from "../shared/protocol.ts";
 import { herdrRpc } from "./herdr/client.ts";
 import { recentProcessTable } from "./gjc-runtime.ts";
-import { processStartedAt } from "./process-start.ts";
+import { processStartedAtAsync } from "./process-start.ts";
 import { descendantProcesses, type ProcessRow } from "./windows-processes.ts";
 
 const OMO_PROCESS = /(^|\/)omo(\.js)?$|\/omo-ai\//;
@@ -190,16 +190,25 @@ function processCwd(process: { pid: number; cwd?: string }, cwd: string): string
  *   or an unreadable start never identify a custom omo, and nothing here depends on
  *   the model it runs.
  */
-export function omoProcessIdentity(
+export async function omoProcessIdentity(
   process: { pid: number; argv?: string[]; cwd?: string },
   cwd: string,
   home: string,
   environOf: (pid: number) => readonly string[] | null = processEnviron,
+): Promise<{ agentDir: string; heldIds: string[]; custom: boolean } | null> {
+  return omoProcessIdentityWithBirth(process, cwd, home, environOf, await processStartedAtAsync(process.pid));
+}
+
+function omoProcessIdentityWithBirth(
+  process: { pid: number; argv?: string[]; cwd?: string },
+  cwd: string,
+  home: string,
+  environOf: (pid: number) => readonly string[] | null,
+  startedAt: number | null,
 ): { agentDir: string; heldIds: string[]; custom: boolean } | null {
   const dir = processCwd(process, cwd);
   const environ = environOf(process.pid);
   const agentDir = omoAgentDir(environ, home, dir);
-  const startedAt = processStartedAt(process.pid);
   if (isOmoProcess(process.argv ?? [])) {
     return { agentDir, heldIds: heldSessionIds(sessionDir(dir, agentDir), process.pid, startedAt), custom: false };
   }
@@ -358,26 +367,25 @@ interface PaneResolution {
   pane: HerdrPane;
   /** herdr answered the pane's process list (an empty one is an answer) */
   informed: boolean;
-  omos: { process: OmoForeground; identity: NonNullable<ReturnType<typeof omoProcessIdentity>>; cwd: string }[];
+  omos: { process: OmoForeground; identity: NonNullable<Awaited<ReturnType<typeof omoProcessIdentity>>>; cwd: string }[];
   cwd: string;
   ambiguous: boolean;
 }
 
-function resolvePaneRuntime(pane: HerdrPane, info: ProcessInfo, home: string, environOf: (pid: number) => readonly string[] | null): PaneResolution {
+async function resolvePaneRuntime(pane: HerdrPane, info: ProcessInfo, home: string, environOf: (pid: number) => readonly string[] | null): Promise<PaneResolution> {
   const fallback = paneFallbackCwd(pane);
-  const omos = (info?.process_info?.foreground_processes ?? []).flatMap((process) => {
-    const identity = omoProcessIdentity(process, fallback, home, environOf);
-    return identity === null ? [] : [{ process, identity, cwd: processCwd(process, fallback) }];
-  });
+  const omos = (await Promise.all((info?.process_info?.foreground_processes ?? []).map(async (process) => {
+    const identity = await omoProcessIdentity(process, fallback, home, environOf);
+    return identity === null ? null : { process, identity, cwd: processCwd(process, fallback) };
+  }))).filter((omo) => omo !== null) as PaneResolution["omos"];
+  return paneResolution(pane, info, omos, fallback);
+}
+
+function paneResolution(pane: HerdrPane, info: ProcessInfo, omos: PaneResolution["omos"], fallback: string): PaneResolution {
   const holding = [...new Set(omos.filter((omo) => omo.identity.heldIds.length > 0).map((omo) => omo.cwd))];
   const running = [...new Set(omos.map((omo) => omo.cwd))];
-  return {
-    pane,
-    informed: info?.process_info?.foreground_processes != null,
-    omos,
-    cwd: holding.length === 1 ? holding[0]! : running.length === 1 ? running[0]! : fallback,
-    ambiguous: holding.length > 1,
-  };
+  return { pane, informed: info?.process_info?.foreground_processes != null, omos,
+    cwd: holding.length === 1 ? holding[0]! : running.length === 1 ? running[0]! : fallback, ambiguous: holding.length > 1 };
 }
 
 /** A pane answers for its resolved folder; an ambiguous one still claims in each folder a process of its runs in. */
@@ -392,7 +400,7 @@ const inCwdGroup = (resolved: PaneResolution, cwd: string): boolean =>
  * canonical stores that pane's own processes resolved; another store's file of the same
  * id is a different session, and a pending holder never borrows it.
  */
-function omoTranscriptsResolved(cwd: string, panes: readonly PaneResolution[], home: string): Map<string, { path: string | null; pending: string | null; startedAt: number | null }> {
+async function omoTranscriptsResolved(cwd: string, panes: readonly PaneResolution[], home: string): Promise<Map<string, { path: string | null; pending: string | null; startedAt: number | null }>> {
   const runtimes: OmoRuntime[] = [];
   // Each process's own store: the default one, and wherever its environment moved it.
   const agentDirs = new Set([defaultOmoAgentDir(home)]);
@@ -408,7 +416,7 @@ function omoTranscriptsResolved(cwd: string, panes: readonly PaneResolution[], h
     if (omos.length === 0) continue;
     // every identity came from verified holders alone: hints and inference never apply
     const custom = omos.every(({ identity }) => identity.custom);
-    const starts = omos.map(({ process }) => processStartedAt(process.pid));
+    const starts = await Promise.all(omos.map(({ process }) => processStartedAtAsync(process.pid)));
     const owned = omos.map(({ identity }) => identity.agentDir);
     for (const agentDir of owned) agentDirs.add(agentDir);
     const dirs = omos.map((omo, index) => sessionDir(omo.cwd, owned[index]!));
@@ -472,8 +480,8 @@ function omoTranscriptsResolved(cwd: string, panes: readonly PaneResolution[], h
 }
 
 /** The sessions of `cwd`'s panes: each pane's runtime folder is resolved from its own processes first. */
-export function omoTranscriptsOfCwd(cwd: string, panes: HerdrPane[], infos: ReadonlyMap<string, ProcessInfo>, home: string, environOf: (pid: number) => readonly string[] | null = processEnviron): Map<string, { path: string | null; pending: string | null; startedAt: number | null }> {
-  return omoTranscriptsResolved(cwd, panes.map((pane) => resolvePaneRuntime(pane, infos.get(pane.pane_id) ?? null, home, environOf)), home);
+export async function omoTranscriptsOfCwd(cwd: string, panes: HerdrPane[], infos: ReadonlyMap<string, ProcessInfo>, home: string, environOf: (pid: number) => readonly string[] | null = processEnviron): Promise<Map<string, { path: string | null; pending: string | null; startedAt: number | null }>> {
+  return omoTranscriptsResolved(cwd, await Promise.all(panes.map((pane) => resolvePaneRuntime(pane, infos.get(pane.pane_id) ?? null, home, environOf))), home);
 }
 
 /**
@@ -485,11 +493,11 @@ export async function omoSessionForPane(paneId: string, cwd: string, panes: Herd
   // A child model can change herdr's agent label: inspect each pane's processes once.
   const candidates = panes;
   const infos = new Map(await Promise.all(candidates.map(async (pane) => [pane.pane_id, await processInfo(pane.pane_id)] as const)));
-  const resolved = candidates.map((pane) => resolvePaneRuntime(pane, infos.get(pane.pane_id) ?? null, home, processEnviron));
+  const resolved = await Promise.all(candidates.map((pane) => resolvePaneRuntime(pane, infos.get(pane.pane_id) ?? null, home, processEnviron)));
   const target = resolved.find((entry) => entry.pane.pane_id === paneId);
   // two holder-owning cwds fail closed: the pane cannot be bound to either
   if (target?.ambiguous) return { path: null, pending: null };
-  const session = omoTranscriptsResolved(target?.cwd ?? cwd, resolved, home).get(paneId);
+  const session = (await omoTranscriptsResolved(target?.cwd ?? cwd, resolved, home)).get(paneId);
   return { path: session?.path ?? null, pending: session?.pending ?? null };
 }
 
@@ -506,11 +514,11 @@ export async function omoTranscriptForPane(paneId: string, cwd: string, panes: H
 export async function omoPanes(panes: HerdrPane[], home = process.env["HOME"] ?? ""): Promise<Map<string, { path: string | null; startedAt: number | null }>> {
   const candidates = panes;
   const infos = new Map(await Promise.all(candidates.map(async (pane) => [pane.pane_id, await processInfo(pane.pane_id)] as const)));
-  const resolved = candidates.map((pane) => resolvePaneRuntime(pane, infos.get(pane.pane_id) ?? null, home, processEnviron));
+  const resolved = await Promise.all(candidates.map((pane) => resolvePaneRuntime(pane, infos.get(pane.pane_id) ?? null, home, processEnviron)));
   const found = new Map<string, { path: string | null; startedAt: number | null }>();
   const cwds = new Set(resolved.flatMap((entry) => entry.omos.length === 0 ? [] : entry.ambiguous ? entry.omos.map((omo) => omo.cwd) : [entry.cwd]));
   for (const cwd of cwds) {
-    const transcripts = cwd ? omoTranscriptsResolved(cwd, resolved, home) : new Map<string, { path: string | null; pending: string | null; startedAt: number | null }>();
+    const transcripts = cwd ? await omoTranscriptsResolved(cwd, resolved, home) : new Map<string, { path: string | null; pending: string | null; startedAt: number | null }>();
     for (const entry of resolved) if (entry.omos.length > 0 && inCwdGroup(entry, cwd)) found.set(entry.pane.pane_id, transcripts.get(entry.pane.pane_id) ?? { path: null, startedAt: null });
   }
   return found;

@@ -44,7 +44,7 @@ import { CODEX_IMAGE_REF, codexTranscriptImage } from "./codex-images.ts";
 import { AmbiguousClaudeStore, claudeProcessSession, claudeTranscriptFile, defaultClaudeConfigDir, forgetClaudeSessionFile, forgetClaudeSessions, isClaudeProcess, processClaudeConfigDir } from "./claude-store.ts";
 import { forgetGjcState, gjcPidUnderShell, gjcTranscriptForPane, isGjcProcess, storeRelative } from "./gjc-runtime.ts";
 import { omoProcessIdentity, omoSessionForPane, processEnviron } from "./omo.ts";
-import { processStartedAt } from "./process-start.ts";
+import { processStartedAtAsync } from "./process-start.ts";
 import { ompHeldTranscript } from "./omp.ts";
 import { forgetOpencodeRead, forgetOpencodeState, OPENCODE_IMAGE_REF, opencodeConversation, opencodeDatabasePath, opencodeImage, opencodeReadKey, opencodeSessionId, opencodeToolOutput } from "./opencode.ts";
 import { piTranscriptInStore, piTranscriptPath, unwrittenSession } from "./pi.ts";
@@ -1131,14 +1131,13 @@ export async function paneRunsOmo(paneId: string): Promise<boolean> {
     { pane_id: paneId },
   ).catch(() => null);
   const home = process.env["HOME"] ?? "";
-  return (info?.process_info?.foreground_processes ?? []).some((process) =>
+  return (await Promise.all((info?.process_info?.foreground_processes ?? []).map((process) =>
     // a pid herdr does not report keeps the argv-only proof and fails the custom one closed
     omoProcessIdentity({
       pid: typeof process.pid === "number" ? process.pid : -1,
       argv: Array.isArray(process.argv) ? process.argv.map(String) : undefined,
       cwd: typeof process.cwd === "string" && process.cwd ? process.cwd : undefined,
-    }, "", home) !== null,
-  );
+    }, "", home)))).some((identity) => identity !== null);
 }
 
 /** Loaded roots and environment belong to the foreground agent, not the web server. */
@@ -1168,7 +1167,7 @@ export async function paneProcessRoots(paneId: string, agent: string | null | un
     if (!matched && agent && ["claude", "codex", "omp", "gjc", "pi", "opencode", "devin", "grok", "hermes", "agy"].includes(agent) && launched === agent) {
       matched = process;
     }
-    const identity = omoProcessIdentity(process, "", home);
+    const identity = await omoProcessIdentity(process, "", home);
     if (!identity) continue;
     const agentDir = directory(identity.agentDir);
     const argv = process.argv.map((word) => word.replace(/\\/g, "/"));
@@ -1268,7 +1267,7 @@ export async function claudePaneSession(pane: HerdrPane): Promise<{ path: string
   let pid: number | null = null;
   try {
     const path = await claudeTranscriptPath(pane.pane_id, [pane.cwd, pane.foreground_cwd], (found) => { pid = found; });
-    return { path, startedAt: pid === null ? null : processStartedAt(pid), pid };
+    return { path, startedAt: pid === null ? null : await processStartedAtAsync(pid), pid };
   } catch (error) {
     if (error instanceof ConversationUnavailable) return null;
     throw error;

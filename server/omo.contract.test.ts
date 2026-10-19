@@ -253,7 +253,7 @@ it.skipIf(process.platform !== "linux")("recognizes a custom launcher only by ve
   const withoutCwd = { process_info: { foreground_processes: processes.map(({ pid, argv }) => ({ pid, argv })) } };
   const stale = snapshot.panes.filter((entry) => entry.pane_id === paneId).map((entry) =>
     ({ ...entry, cwd: join(root, "stale-pane"), foreground_cwd: join(root, "stale-foreground") }));
-  const resolved = omoTranscriptsOfCwd(root, stale, new Map([[paneId, withoutCwd]]), root).get(paneId);
+  const resolved = (await omoTranscriptsOfCwd(root, stale, new Map([[paneId, withoutCwd]]), root)).get(paneId);
   expect(resolved?.path).toBe(realpathSync(written));
   expect(resolved?.pending).toBeNull();
   for (const agent of ["codex", "devin", "gjc"]) {

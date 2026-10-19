@@ -16,7 +16,7 @@ import { HerdrError, paneProcessInfo, paneRead, paneSendKeys, paneSendText } fro
 import { claudeHeldIsGrey, codexQuestionsCollapsed, isClaudeHeld, heldCandidate, modelListWaits, noteSubmitted, parseInteractivePrompt, shownInputBox } from "../prompt.ts";
 import { secretPrompt } from "../../shared/secret-prompt.ts";
 import { PendingInputs, samePendingIdentity, type PendingIdentity, type PendingRecord } from "../pending-input.ts";
-import { processStartedAt } from "../process-start.ts";
+import { processStartedAtAsync } from "../process-start.ts";
 import { PendingRequestBook } from "../pending-requests.ts";
 import { interruptCodexSteering } from "../codex-steering.ts";
 import type { OmoStatus } from "../omo-status.ts";
@@ -96,11 +96,34 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
     const pid = info?.foreground_processes?.[0]?.pid ?? null;
     const base = pendingIdentity(pane);
     const current: PendingIdentity = {
-      ...base, processPid: pid, processBirth: pid === null ? null : processStartedAt(pid),
+      ...base, processPid: pid, processBirth: pid === null ? null : await processStartedAtAsync(pid),
       omoSession: omo.sessionOf(paneId)?.sessionId ?? null,
       // Claude's own PID record says which session it runs, also without herdr's hook
       claudeSession: base.agent === "claude" ? await claudeForegroundSession(info?.foreground_processes ?? []) : null,
     };
+    // Birth probing yields. Re-read both herdr identities before any write so a replacement
+    // that kept the attachment lease cannot inherit the old process's queued input.
+    const refreshedPane = (await clientSnapshot()).panes.find((candidate) => candidate.pane_id === paneId);
+    const refreshedInfo = await paneProcessInfo(paneId);
+    const refreshedPid = refreshedInfo?.foreground_processes?.[0]?.pid ?? null;
+    const [refreshedBirth, refreshedClaudeSession] = await Promise.all([
+      refreshedPid === null ? null : processStartedAtAsync(refreshedPid),
+      base.agent === "claude" ? claudeForegroundSession(refreshedInfo?.foreground_processes ?? []) : null,
+    ]);
+    const refreshed: PendingIdentity | null = refreshedPane ? {
+      ...pendingIdentity(refreshedPane), processPid: refreshedPid, processBirth: refreshedBirth,
+      omoSession: omo.sessionOf(paneId)?.sessionId ?? null, claudeSession: refreshedClaudeSession,
+    } : null;
+    // Compare both observations to the saved lease identity directly: an unknown intermediate
+    // probe must never hide a known old birth from a known replacement birth.
+    if (refreshedPid !== pid || !refreshed
+      || (current.processBirth != null && refreshedBirth === null)
+      || (identity?.processBirth != null && (current.processBirth === null || refreshedBirth === null))
+      || !samePendingIdentity(current, refreshed) || (identity && !samePendingIdentity(identity, refreshed))) {
+      throw new HerdrError("pending_target_changed", "The pane's terminal or agent session changed; review the message before sending it again");
+    }
+    // The process probes yielded; authority may have changed while they ran.
+    authorizePending(owner, paneId, lease);
     if (identity && !samePendingIdentity(identity, current)) {
       throw new HerdrError("pending_target_changed", "The pane's terminal or agent session changed; review the message before sending it again");
     }
