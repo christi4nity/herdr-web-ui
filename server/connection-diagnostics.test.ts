@@ -51,7 +51,24 @@ describe("connection diagnostics", () => {
     diagnostics.recovered("peer", { operation: "session.snapshot" });
     expect(records()).toHaveLength(2);
     expect(records()[1]).toMatchObject({ event: "herdr.rpc.recovered", episode_id: records()[0].episode_id, failures: 2, suppressed: 1, since_first_failure_ms: 5000 });
+    advance(30_000);
     diagnostics.failed("peer", "closed", { operation: "session.snapshot" });
+    expect(records()[2].episode_id).not.toBe(records()[0].episode_id);
+  });
+
+  it("throttles rapid failure/recovery cycles and summarizes silent failures on the next visible episode", () => {
+    const { diagnostics, records, advance } = fixture();
+    for (let i = 0; i < 100; i++) {
+      diagnostics.failed("peer", "closed", { operation: "session.snapshot" });
+      diagnostics.recovered("peer", { operation: "session.snapshot" });
+    }
+    expect(records()).toHaveLength(2);
+    advance(30_000);
+    diagnostics.failed("peer", "timeout", { operation: "session.snapshot" });
+    expect(records()[2]).toMatchObject({ event: "herdr.rpc.failed", failures: 100, suppressed: 99 });
+    diagnostics.recovered("peer", { operation: "session.snapshot" });
+    expect(records()).toHaveLength(4);
+    expect(records()[3]).toMatchObject({ event: "herdr.rpc.recovered", episode_id: records()[2].episode_id });
     expect(records()[2].episode_id).not.toBe(records()[0].episode_id);
   });
 

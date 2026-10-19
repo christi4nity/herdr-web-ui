@@ -22,7 +22,8 @@ request ID with Herdr's own log; a timeout alone does not identify which process
 
 A later successful RPC or machine connection writes one `.recovered` line. Repeated failures are
 summarized at most once every 30 seconds per RPC method/peer or machine, with suppressed counts;
-bookkeeping retains at most 128 failing keys per logger. Abnormal browser WebSocket closes are
+bookkeeping retains at most 128 recent keys per logger, including healthy keys so flapping cannot
+reset the throttle. Only a visible failure episode emits a recovery. Abnormal browser WebSocket closes are
 coalesced separately for local and relayed connections; normal closes and server shutdown are quiet.
 The close reason, input, credentials, peer names, socket paths and raw exception messages are never
 included. A remote machine's opaque UUID may appear, not its name or SSH address. These records are

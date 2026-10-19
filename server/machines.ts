@@ -467,6 +467,9 @@ export class MachineManager {
         this.emit();
       } catch (e) {
         const ownsRuntime = runtime.generation === generation;
+        if (ownsRuntime && !this.stopped && !job.abort.signal.aborted && job.public.phase !== "cancelled") {
+          this.remoteDiagnostics.failed(machineId, e instanceof MachineActionRequired ? "action_required" : "connection_lost", { operation: "bridge", machine_id: machineId });
+        }
         const error = e instanceof Error ? e.message : String(e);
         // an update of a registered PC that could not reach it (switched off, asleep, off the
         // network, or gone in the middle) learned nothing about its bridge: the PC waits as

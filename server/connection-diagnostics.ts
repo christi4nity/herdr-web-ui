@@ -29,6 +29,8 @@ interface Failure {
   code: FailureCode;
   count: number;
   suppressed: number;
+  active: boolean;
+  visible: boolean;
 }
 
 /** Connection failures only: no access log, input, credentials, peer names, or exception text. */
@@ -45,28 +47,40 @@ export class ConnectionDiagnostics {
     const now = this.now();
     let failure = this.failures.get(key);
     if (!failure) {
-      // A missing peer must not leave unbounded bookkeeping in a long-running bridge.
+      // Retain recent healthy keys too: clearing their throttle lets rapid failure/recovery
+      // cycles flood the log. This one bounded map owns both episodes and throttle history.
       if (this.failures.size >= MAX_FAILURES) this.failures.delete(this.failures.keys().next().value!);
-      failure = { id: randomUUID(), since: now, loggedAt: now, code, count: 0, suppressed: 0 };
+      failure = { id: randomUUID(), since: now, loggedAt: -Infinity, code, count: 0, suppressed: 0, active: false, visible: false };
       this.failures.set(key, failure);
-    } else if (now - failure.loggedAt < REPEAT_MS) {
-      failure.code = code;
-      failure.count++;
+    }
+    if (!failure.active && failure.count === 0) {
+      failure.id = randomUUID();
+      failure.since = now;
+    }
+    failure.active = true;
+    failure.count++;
+    failure.code = code;
+    if (now - failure.loggedAt < REPEAT_MS) {
       failure.suppressed++;
       return;
     }
-    failure.count++;
-    failure.code = code;
     failure.loggedAt = now;
+    failure.visible = true;
     this.emit("failed", failure, fields, now);
     failure.suppressed = 0;
   }
 
   recovered(key: string, fields: Fields): void {
     const failure = this.failures.get(key);
-    if (!failure) return;
-    this.failures.delete(key);
+    if (!failure?.active) return;
+    failure.active = false;
+    // A silent flapping episode must not produce an orphan recovery line. Its suppressed
+    // failures are carried to the next visible episode; each visible episode recovers once.
+    if (!failure.visible) return;
     this.emit("recovered", failure, fields, this.now());
+    failure.visible = false;
+    failure.count = 0;
+    failure.suppressed = 0;
   }
 
   private emit(event: "failed" | "recovered", failure: Failure, fields: Fields, now: number): void {
