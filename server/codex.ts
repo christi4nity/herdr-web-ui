@@ -1475,13 +1475,14 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
       // no other interactive thread in this cwd began after this Codex did (newerThreads;
       // one no other pane shows counts too: then the chat says it cannot tell, rather
       // than show the wrong conversation). A thread's update time is not the process's
-      // birth: after /new it can hide a newer conversation, so unknown starts bind none.
+      // birth: after /new it can hide a newer conversation. An unknown start rejects
+      // only this hint; reported threads and the visible screen remain independent evidence.
       const starts = await Promise.all(codexProcesses.map((process) => processStartedAtAsync(process.pid)));
-      if (starts.length === 0 || starts.some((start) => start === null)) return null;
-      const startedAt = Math.min(...starts.map((start) => start ?? Infinity));
-      const since = Math.floor(startedAt / 1000);
-      resumedPath = row ? codexRolloutPath(row.rollout_path, home) : null;
-      resumedNewer = newerThreads(db, cwd, since, resumed, paneId, home, firsts);
+      if (starts.length > 0 && starts.every((start) => start !== null)) {
+        const since = Math.floor(Math.min(...starts) / 1000);
+        resumedPath = row ? codexRolloutPath(row.rollout_path, home) : null;
+        resumedNewer = newerThreads(db, cwd, since, resumed, paneId, home, firsts);
+      }
     }
     // the same guard for a match: after /new the process writes a thread begun since
     // (created_at has whole seconds, so one begun in the match's second counts too)

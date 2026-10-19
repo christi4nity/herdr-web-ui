@@ -101,6 +101,14 @@ it("rejects an obsolete resumed thread when its process birth is unknown", async
   finally { probe.mockRestore(); }
 });
 
+it("matches the visible conversation when the resumed process birth is unknown", async () => {
+  foreground = [{ pid: 2_000_001, argv: ["/usr/bin/codex", "resume", thread] }];
+  screen = answer;
+  const probe = spyOn(processStart, "processStartedAtAsync").mockResolvedValue(null);
+  try { expect(await resolve()).toBe(path); }
+  finally { probe.mockRestore(); }
+});
+
 it("keeps the resumed thread window while the process probe ceiling is occupied", async () => {
   foreground = [{ pid: 2_000_001, argv: ["/usr/bin/codex", "resume", thread] }];
   const db = new Database(join(home, "state_5.sqlite"));
