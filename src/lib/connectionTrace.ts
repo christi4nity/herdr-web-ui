@@ -27,6 +27,8 @@ function traceId(): string | null {
 export class ConnectionTrace {
   private readonly id = traceId();
   private readonly events: ClientConnectionEvent[] = [];
+  private incidentContext: ClientConnectionEvent[] = [];
+  private following: ClientConnectionEvent[] = [];
   private seq = 0;
   private incident = 0;
   private reported = 0;
@@ -59,7 +61,17 @@ export class ConnectionTrace {
       if (detail.result === "ok" || detail.result === "refused") event.result = detail.result;
       this.events.push(event);
       if (this.events.length > 32) this.events.shift();
-      if (incident) this.incident = event.seq;
+      if (incident) {
+        this.incident = event.seq;
+        this.incidentContext = this.events.slice(-16);
+        this.following = [];
+      } else if (this.incident > this.reported) {
+        // Keep the trigger even if healthy ping/pong traffic overwrites the recent ring while
+        // a report is throttled or offline. Retain at most four following context records.
+        this.following.push(event);
+        if (this.following.length > 4) this.following.shift();
+        while (this.incidentContext.length + this.following.length > 16) this.incidentContext.shift();
+      }
       this.flush();
     } catch { /* observing a connection must never affect its authority or delivery */ }
   }
@@ -67,12 +79,15 @@ export class ConnectionTrace {
   flush(): void {
     if (this.stopped || this.disabled || !this.id || !this.post || this.posting || this.incident <= this.reported || this.now() < this.nextPost) return;
     const incident = this.incident;
-    const trace: ClientConnectionTrace = { client_id: this.id, target: this.target, events: this.events.slice(-16) };
+    const trace: ClientConnectionTrace = { client_id: this.id, target: this.target, events: [...this.incidentContext, ...this.following] };
     this.posting = true;
     this.nextPost = this.now() + 10_000;
     try {
       void this.post(trace).then((status) => {
-        if (status >= 200 && status < 300) this.reported = Math.max(this.reported, incident);
+        if (status >= 200 && status < 300) {
+          this.reported = Math.max(this.reported, incident);
+          if (this.incident <= this.reported) { this.incidentContext = []; this.following = []; }
+        }
         if ([401, 403, 404].includes(status)) this.disabled = true;
         if (status === 429) this.nextPost = this.now() + 60_000;
       }).catch(() => { /* retained metadata can go with the next connection event, never input */ })
@@ -80,5 +95,5 @@ export class ConnectionTrace {
     } catch { this.posting = false; }
   }
 
-  close(): void { this.stopped = true; this.disabled = true; this.events.length = 0; }
+  close(): void { this.stopped = true; this.disabled = true; this.events.length = 0; this.incidentContext = []; this.following = []; }
 }

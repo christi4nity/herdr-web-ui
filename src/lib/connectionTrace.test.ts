@@ -48,6 +48,18 @@ describe("client connection breadcrumbs", () => {
     expect(sent[1]!.events).toHaveLength(16);
   });
 
+  it("pins the incident while healthy traffic overwrites the ring during throttling", async () => {
+    const { trace, sent, advance } = fixture();
+    trace.record("probe_retry", {}, true); await settle();
+    advance(1000); trace.record("probe_drop", { pending: 1 }, true);
+    for (let i = 0; i < 100; i++) { trace.record("probe"); trace.record("pong"); }
+    expect(sent).toHaveLength(1);
+    advance(10_000); trace.record("open");
+    expect(sent).toHaveLength(2);
+    expect(sent[1]!.events.map((event) => event.kind)).toContain("probe_drop");
+    expect(sent[1]!.events.length).toBeLessThanOrEqual(16);
+  });
+
   it("retains an incident recorded while an earlier report is in flight", async () => {
     let finish!: (status: number) => void; let now = 0;
     const sent: ClientConnectionTrace[] = [];

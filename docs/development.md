@@ -221,7 +221,8 @@ variable the process sets only in-process later may never appear in
 
 ## Browser connection diagnostics
 
-The browser keeps at most 32 connection breadcrumbs in memory. A missed heartbeat, close/error,
+The browser keeps at most 32 recent connection breadcrumbs plus one pinned 16-record incident
+report in memory, so healthy traffic cannot erase the trigger before upload. A missed heartbeat, close/error,
 pagehide, stuck-closing socket, held input or unanswered send can send the latest 16 records to
 `POST /api/connection-diagnostics` on this app's own origin. Healthy traffic does not generate an
 access log. An opaque, per-connection-object ID and connection epoch correlate lifecycle events,
