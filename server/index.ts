@@ -331,8 +331,10 @@ export function createServer(
       // API reads can chain several bounded 10 s Herdr RPCs. Give the handler time to return
       // its JSON result or timeout instead of Bun closing the socket at its default 10 s idle
       // cutoff. Static files keep their default; streaming and long-operation routes override
-      // this finite budget below, after access and origin checks have passed.
-      if (pathname.startsWith("/api/")) bunServer.timeout(request, 60);
+      // this finite budget below, after access and origin checks have passed. Only a signed-in
+      // request gets it: the routes open without sign-in (health, auth, pairing) keep the default,
+      // so an unauthenticated client cannot hold idle sockets for a minute.
+      if (pathname.startsWith("/api/") && authenticated) bunServer.timeout(request, 60);
 
       if (pathname === "/api/bridge") {
         if (token === "" && !bridgeAuthorized) return unauthorizedJson();

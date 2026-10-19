@@ -37,6 +37,11 @@ it("returns results and bounded RPC errors after sequential reads exceed HTTP in
   const sockets = new Set<Socket>();
   const timers = new Set<ReturnType<typeof setTimeout>>();
   const calls: string[] = [];
+  // Only the reads these routes make are answered, plus the server's own event subscription; any
+  // other method (an input RPC included) is refused and recorded, so a regression that sends one
+  // fails the test.
+  const answered = new Set(["events.subscribe", "session.snapshot", "pane.get", "pane.process_info", "worktree.open", "worktree.list"]);
+  const unexpected: string[] = [];
   const daemon = createSocketServer((socket) => {
     sockets.add(socket);
     socket.on("error", () => {});
@@ -50,6 +55,7 @@ it("returns results and bounded RPC errors after sequential reads exceed HTTP in
       let result: unknown = {};
       let error: object | undefined;
       let delay = 0;
+      if (!answered.has(method)) { unexpected.push(method); error = { code: "unexpected_method", message: `fixture does not answer ${method}` }; }
       if (method === "session.snapshot") result = { snapshot: { panes: [], agents: [], workspaces: [], tabs: [], layouts: [] } };
       if (method === "pane.get") { result = { pane: { pane_id: "fixture", cwd: root, agent: null } }; delay = 7000; }
       // A slow first read, then a lost reply: the command reader falls back after the RPC deadline.
@@ -92,6 +98,7 @@ it("returns results and bounded RPC errors after sequential reads exceed HTTP in
     // The HTTP cutoff must not turn one request into retries or repeated operations.
     expect(calls.filter((call) => call === "worktree.open:fixture-source")).toHaveLength(2);
     expect(calls.filter((call) => call === "worktree.open:fixture-parent")).toHaveLength(2);
+    expect(unexpected).toEqual([]);
   } finally {
     app?.stop();
     for (const timer of timers) clearTimeout(timer);
