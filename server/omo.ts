@@ -210,7 +210,7 @@ function omoProcessIdentityWithBirth(
   const environ = environOf(process.pid);
   const agentDir = omoAgentDir(environ, home, dir);
   if (isOmoProcess(process.argv ?? [])) {
-    return { agentDir, heldIds: startedAt === null ? [] : heldSessionIds(sessionDir(dir, agentDir), process.pid, startedAt), custom: false };
+    return { agentDir, heldIds: startedAt === null && globalThis.process.platform !== "win32" ? [] : heldSessionIds(sessionDir(dir, agentDir), process.pid, startedAt), custom: false };
   }
   if (!dir || startedAt === null) return null;
   const omoStore = environ?.some((word) => word.startsWith("OMO_CODING_AGENT_DIR=")) === true || agentDir === defaultOmoAgentDir(home);
@@ -428,11 +428,11 @@ async function omoTranscriptsResolved(cwd: string, panes: readonly PaneResolutio
     since.set(pane.pane_id, earliestStart(told));
     held.set(pane.pane_id, omos.flatMap(({ process, identity, cwd }, index) => {
       const birth = starts[index] ?? null;
-      const ids = birth === null ? [] : heldSessionIds(dirs[index]!, process.pid, birth, identity.custom ? cwd : undefined);
+      const ids = birth === null && globalThis.process.platform !== "win32" ? [] : heldSessionIds(dirs[index]!, process.pid, birth, identity.custom ? cwd : undefined);
       return ids.map((id) => ({ id, dir: dirs[index]!, store: stores[index] ?? null }));
     }));
     for (const [index, { process, identity }] of omos.entries()) {
-      if (!identity.custom) ids.push(...resumedIds(process.argv ?? []));
+      if (!identity.custom && (starts[index] !== null || globalThis.process.platform === "win32")) ids.push(...resumedIds(process.argv ?? []));
       // Only an open file in the session store is evidence: omo also holds its background
       // tasks' logs (<cwd>/.omo/senpi-task/logs/*.jsonl) open, and one of those pinned the
       // pane to a path no candidate matches, so the chat lost the transcript mid-session.
@@ -448,7 +448,7 @@ async function omoTranscriptsResolved(cwd: string, panes: readonly PaneResolutio
       }
     }
     const session = pane.agent_session;
-    if (!custom && session?.agent === "omo" && session.value) {
+    if (!custom && (starts.every((start) => start !== null) || globalThis.process.platform === "win32") && session?.agent === "omo" && session.value) {
       if (session.kind === "path") paths.push(session.value);
       if (session.kind === "id") ids.push(session.value);
     }

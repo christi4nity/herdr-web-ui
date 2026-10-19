@@ -22,7 +22,7 @@ const writeSession = (dir: string, id: string, cwd: string): string => {
 const info = (processes: { pid: number; argv?: string[]; cwd?: string }[]) => ({ process_info: { foreground_processes: processes } });
 const NEUTRAL = ["/opt/team-ai/bin/run"];
 
-it("rejects stale argv holders when the real process probe ceiling is occupied", async () => {
+it("keeps verified argv holders when the real process probe ceiling is occupied", async () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "herdr-omo-saturated-")));
   const cwd = join(root, "project");
   const agentDir = join(root, "agent");
@@ -32,14 +32,35 @@ it("rejects stale argv holders when the real process probe ceiling is occupied",
   const reached = Promise.withResolvers<void>();
   const probe = spyOn(processStart, "processStartedAtAsync").mockImplementation(async () => {
     reached.resolve();
-    return await processStart.psOutput(["-o", "pid=", "-p", String(process.pid)]) === null ? null : 110_000;
+    return await processStart.psOutput(["-o", "pid=", "-p", String(process.pid)]) === null ? null : 100_500;
   });
   try {
     const identity = omoProcessIdentity({ pid, argv: ["omo"], cwd }, cwd, root, () => [`OMO_CODING_AGENT_DIR=${agentDir}`]);
     await reached.promise;
     saturation.release();
-    expect((await identity)?.heldIds).toEqual([]);
+    expect((await identity)?.heldIds).toEqual(["stale"]);
   } finally { probe.mockRestore(); await saturation.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+for (const platform of ["linux", "win32"] as const) it(`does not resurrect a launch hint with an unknown birth on ${platform}`, async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "herdr-omo-unknown-launch-")));
+  const cwd = join(root, "project");
+  const agentDir = join(root, "agent");
+  const dir = join(agentDir, "sessions", omoSessionFolder(cwd));
+  const pid = 2_000_001;
+  writeSession(dir, "session-A", cwd);
+  holdRecord(dir, "session-B", pid, { pid, processStartedAtMs: 100_000, cwd });
+  const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform");
+  if (!originalPlatform) throw new Error("Missing process platform descriptor");
+  Object.defineProperty(process, "platform", { value: platform });
+  const probe = spyOn(processStart, "processStartedAtAsync").mockResolvedValue(null);
+  try {
+    const pane = { pane_id: "w:p1", cwd } as HerdrPane;
+    const result = (await omoTranscriptsOfCwd(cwd, [pane], new Map([[pane.pane_id, info([{ pid, argv: ["omo", "--session-id", "session-A"], cwd }])]]),
+      root, () => [`OMO_CODING_AGENT_DIR=${agentDir}`])).get(pane.pane_id);
+    expect(result?.path).toBeNull();
+    expect(result?.pending).toBe(platform === "win32" ? "session-B" : null);
+  } finally { probe.mockRestore(); Object.defineProperty(process, "platform", originalPlatform); rmSync(root, { recursive: true, force: true }); }
 });
 
 for (const births of [[null, 110_000], [100_000, 110_000]] as const) it(`rejects stale holders across birth probes ${births}`, async () => {
@@ -89,8 +110,8 @@ it("discovers custom holders beyond eight concurrent birth probes on every refre
     return [pane.pane_id, info([{ pid, argv: NEUTRAL, cwd }])] as const;
   }));
   let active = 0;
-  // Hold each admitted slot until the next microtask; simultaneous ninth probes are refused,
-  // exactly as the bounded macOS subprocess adapter does.
+  // Model a saturated adapter returning unknown, independent of the production FIFO:
+  // sequential discovery must not discard the same ninth pane on every refresh.
   const probe = spyOn(processStart, "processStartedAtAsync").mockImplementation(async () => {
     if (active >= 8) return null;
     active++;

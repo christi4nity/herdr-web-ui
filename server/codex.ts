@@ -1474,13 +1474,12 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
       // After /new the command line still names the resumed thread. Trust it only while
       // no other interactive thread in this cwd began after this Codex did (newerThreads;
       // one no other pane shows counts too: then the chat says it cannot tell, rather
-      // than show the wrong conversation). Without a start time, since the resumed
-      // thread was last updated.
+      // than show the wrong conversation). A thread's update time is not the process's
+      // birth: after /new it can hide a newer conversation, so unknown starts bind none.
       const starts = await Promise.all(codexProcesses.map((process) => processStartedAtAsync(process.pid)));
+      if (starts.length === 0 || starts.some((start) => start === null)) return null;
       const startedAt = Math.min(...starts.map((start) => start ?? Infinity));
-      const since = Number.isFinite(startedAt)
-        ? Math.floor(startedAt / 1000)
-        : (db.query<{ updated_at: number }, [string]>("SELECT updated_at FROM threads WHERE id = ?").get(resumed)?.updated_at ?? 0);
+      const since = Math.floor(startedAt / 1000);
       resumedPath = row ? codexRolloutPath(row.rollout_path, home) : null;
       resumedNewer = newerThreads(db, cwd, since, resumed, paneId, home, firsts);
     }

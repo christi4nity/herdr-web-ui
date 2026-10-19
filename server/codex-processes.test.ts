@@ -81,6 +81,26 @@ const resolve = () => codexTranscriptPath(root, root, home, [{
   agent: "codex", agent_status: "working", cwd: root, focused: false, revision: 0,
 }]);
 
+/** Argv controls describe a known live runtime, not a failed process-birth lookup. */
+async function resumedWithKnownBirth() {
+  const probe = spyOn(processStart, "processStartedAtAsync").mockResolvedValue(1000);
+  try { return await resolve(); }
+  finally { probe.mockRestore(); }
+}
+
+it("rejects an obsolete resumed thread when its process birth is unknown", async () => {
+  foreground = [{ pid: 2_000_001, argv: ["/usr/bin/codex", "resume", thread] }];
+  const db = new Database(join(home, "state_5.sqlite"));
+  db.query("UPDATE threads SET updated_at = 300").run();
+  db.query("INSERT INTO threads VALUES (?, ?, ?, 0, NULL, 200, 200, 'cli')").run(
+    "01a0c7a1-56d9-7e20-9f08-f7a2d973bc02", join(home, "sessions", "missing.jsonl"), root,
+  );
+  db.close();
+  const probe = spyOn(processStart, "processStartedAtAsync").mockResolvedValue(null);
+  try { expect(await resolve()).toBeNull(); }
+  finally { probe.mockRestore(); }
+});
+
 it("keeps the resumed thread window while the process probe ceiling is occupied", async () => {
   foreground = [{ pid: 2_000_001, argv: ["/usr/bin/codex", "resume", thread] }];
   const db = new Database(join(home, "state_5.sqlite"));
@@ -126,7 +146,7 @@ it.skipIf(process.platform !== "linux")("selects the resumed rollout when Linux 
 
 it("selects the resumed rollout for the observed native executable alias", async () => {
   foreground = [{ pid: 2147483647, argv: ["/home/user/.local/bin/codex.opencodex-real", "resume", thread] }];
-  expect(await resolve()).toBe(path);
+  expect(await resumedWithKnownBirth()).toBe(path);
 });
 
 it.skipIf(process.platform !== "linux")("keeps the screen binding with recovered argv while the same process runs", async () => {
@@ -190,13 +210,13 @@ it("does not trust the Codex name when recovered argv belongs to another executa
 
 it("does not use an alias resume after a newer interactive thread starts", async () => {
   foreground = [{ pid: 2147483647, argv: ["/usr/bin/codex.opencodex-real", "resume", thread] }];
-  expect(await resolve()).toBe(path);
+  expect(await resumedWithKnownBirth()).toBe(path);
   const db = new Database(join(home, "state_5.sqlite"));
   db.query("INSERT INTO threads VALUES (?, ?, ?, 0, NULL, 2, 2, 'cli')").run(
     "01a0c7a1-56d9-7e20-9f08-f7a2d973bc02", join(home, "sessions", "missing.jsonl"), root,
   );
   db.close();
-  expect(await resolve()).toBeNull();
+  expect(await resumedWithKnownBirth()).toBeNull();
 });
 
 const shortPrompt = "Check fixture";
@@ -545,7 +565,7 @@ for (const executable of [
 ]) {
   it(`preserves resume selection for ${executable.join(" ")}`, async () => {
     foreground = [{ pid: 2147483647, argv: [...executable, "resume", thread] }];
-    expect(await resolve()).toBe(path);
+    expect(await resumedWithKnownBirth()).toBe(path);
   });
 }
 
