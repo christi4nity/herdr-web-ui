@@ -11,6 +11,7 @@ import * as processStart from "./process-start.ts";
 import * as pendingInput from "./pending-input.ts";
 import { OmoStatus } from "./omo-status.ts";
 import * as claudeStore from "./claude-store.ts";
+import { saturatedProcessProbes } from "../scripts/test-process-probes.ts";
 
 type PendingUpdate = Extract<ServerMessage, { type: "pending-messages" }>;
 
@@ -213,15 +214,23 @@ describe("connection-owned pending input", () => {
       // Record the initial session before delaying its read on the next delivery attempt.
       const settled = f.socket.event((frame) => frame.messages.some((entry) => entry.id === message.id && entry.state === "held"));
       await f.state("idle");
-      await Promise.race([atProbe, Bun.sleep(5000).then(() => { throw new Error("birth probe not reached"); })]);
+      let probeTimer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([atProbe, new Promise<never>((_resolve, reject) => {
+          probeTimer = setTimeout(() => reject(new Error("birth probe not reached")), 5000);
+        })]);
+      } finally { clearTimeout(probeTimer); }
       expect((await fetch(`http://localhost:${f.port}/api/health`)).ok).toBeTrue();
       if (change === "foreground") {
+        const started = new Promise<void>((resolve, reject) => {
+          const watcher = watch(root, () => {
+            if (!existsSync(f.replacementLog)) return;
+            clearTimeout(timeout); watcher.close(); resolve();
+          });
+          const timeout = setTimeout(() => { watcher.close(); reject(new Error("replacement did not start")); }, 5000);
+        });
         globalThis.process.kill(foreground.pid, "SIGKILL");
-        const deadline = Date.now() + 5000;
-        while (!existsSync(f.replacementLog)) {
-          if (Date.now() >= deadline) throw new Error("replacement did not start");
-          await Bun.sleep(20);
-        }
+        await started;
       } else if (change === "lease") {
         f.socket.send({ type: "role", mode: "observe" });
         await f.socket.wait((frame) => frame.type === "role-ack" && frame.mode === "observe");
@@ -235,6 +244,77 @@ describe("connection-owned pending input", () => {
       expect(f.bytes()).toBe("");
       if (change === "foreground") expect(readFileSync(f.replacementLog, "utf8")).toBe("");
     } finally { release(); probe.mockRestore(); session.mockRestore(); }
+  }, 30_000);
+
+  it("holds the paste when the foreground changes during the final birth probe", async () => {
+    const f = await setup("final-probe-race", "codex", "› Ask Codex to do anything\n");
+    const message = await f.queue(14071, "final probe must stay unsent");
+    const original = await herdrClient.paneProcessInfo(f.pane);
+    const foreground = original?.foreground_processes?.[0];
+    if (!foreground) throw new Error("No foreground recorder");
+    const gate = Promise.withResolvers<void>();
+    const reached = Promise.withResolvers<void>();
+    let calls = 0;
+    let replaced = false;
+    const probe = spyOn(processStart, "processStartedAtAsync").mockImplementation(async () => {
+      if (++calls === 2) { reached.resolve(); await gate.promise; }
+      return processStart.processStartedAt(foreground.pid);
+    });
+    const info = spyOn(herdrClient, "paneProcessInfo").mockImplementation(async () => ({
+      ...original, foreground_processes: [{ ...foreground, pid: replaced ? foreground.pid + 1 : foreground.pid }],
+    }));
+    try {
+      const settled = f.socket.event((frame) => frame.removed?.some((entry) => entry.id === message.id) === true
+        || frame.messages.some((entry) => entry.id === message.id && ["held", "uncertain"].includes(entry.state)));
+      await f.state("idle");
+      await reached.promise;
+      replaced = true;
+      gate.resolve();
+      const outcome = await settled;
+      expect(f.bytes()).toBe("");
+      expect(outcome.messages).toContainEqual(expect.objectContaining({ id: message.id, state: "held" }));
+    } finally { gate.resolve(); probe.mockRestore(); info.mockRestore(); }
+  }, 30_000);
+
+  it("delivers to an unchanged target while status probes occupy the child ceiling", async () => {
+    const f = await setup("probe-saturation", "codex", "› Ask Codex to do anything\n");
+    const message = await f.queue(14073, "unchanged saturated target");
+    const foreground = (await herdrClient.paneProcessInfo(f.pane))?.foreground_processes?.[0];
+    if (!foreground) throw new Error("No foreground recorder");
+    const birth = processStart.processStartedAt(foreground.pid);
+    const saturation = await saturatedProcessProbes();
+    const reached = Promise.withResolvers<void>();
+    const probe = spyOn(processStart, "processStartedAtAsync").mockImplementation(async () => {
+      reached.resolve();
+      return await processStart.psOutput(["-o", "pid=", "-p", String(process.pid)]) === null ? null : birth;
+    });
+    try {
+      const settled = f.socket.event((frame) => frame.removed?.some((entry) => entry.id === message.id) === true
+        || frame.messages.some((entry) => entry.id === message.id && entry.state === "held"));
+      await f.state("idle");
+      await reached.promise;
+      saturation.release();
+      const outcome = await settled;
+      expect(outcome.removed).toContainEqual({ id: message.id, outcome: "sent" });
+      await f.waitBytes("\r");
+      expect(f.bytes()).toContain("unchanged saturated target");
+    } finally { probe.mockRestore(); await saturation.close(); }
+  }, 30_000);
+
+  it("retains a birth learned by the second queue probe against PID reuse", async () => {
+    const f = await setup("learned-birth", "codex", "› Ask Codex to do anything\n");
+    let calls = 0;
+    const probe = spyOn(processStart, "processStartedAtAsync").mockImplementation(async () =>
+      ++calls === 1 ? null : calls === 2 ? 100_000 : 110_000);
+    try {
+      const message = await f.queue(14072, "learned birth must stay unsent");
+      const settled = f.socket.event((frame) => frame.removed?.some((entry) => entry.id === message.id) === true
+        || frame.messages.some((entry) => entry.id === message.id && entry.state === "held"));
+      await f.state("idle");
+      const outcome = await settled;
+      expect(f.bytes()).toBe("");
+      expect(outcome.messages).toContainEqual(expect.objectContaining({ id: message.id, state: "held" }));
+    } finally { probe.mockRestore(); }
   }, 30_000);
 
   it("delivers to the same hookless process with unchanged pid and birth (control #540)", async () => {

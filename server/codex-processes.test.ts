@@ -1,10 +1,12 @@
-import { afterEach, beforeEach, expect, it } from "bun:test";
+import { afterEach, beforeEach, expect, it, spyOn } from "bun:test";
 import { Database } from "bun:sqlite";
 import { appendFileSync, closeSync, mkdirSync, mkdtempSync, openSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { codexOpenRollout, codexTranscriptPath } from "./codex.ts";
 import { processStartedAt, processStartUpperBound } from "./process-start.ts";
+import * as processStart from "./process-start.ts";
+import { saturatedProcessProbes } from "../scripts/test-process-probes.ts";
 
 // Native stores and the real RPC client; only herdr's foreground metadata is synthetic.
 // In particular, a real process supplies /proc/cmdline when that metadata omits argv.
@@ -78,6 +80,27 @@ const resolve = () => codexTranscriptPath(root, root, home, [{
   pane_id: root, workspace_id: root, tab_id: root, terminal_id: root,
   agent: "codex", agent_status: "working", cwd: root, focused: false, revision: 0,
 }]);
+
+it("keeps the resumed thread window while the process probe ceiling is occupied", async () => {
+  foreground = [{ pid: 2_000_001, argv: ["/usr/bin/codex", "resume", thread] }];
+  const db = new Database(join(home, "state_5.sqlite"));
+  db.query("INSERT INTO threads VALUES (?, ?, ?, 0, NULL, 2, 2, 'cli')").run(
+    "01a0c7a1-56d9-7e20-9f08-f7a2d973bc02", join(home, "sessions", "missing.jsonl"), root,
+  );
+  db.close();
+  const saturation = await saturatedProcessProbes();
+  const reached = Promise.withResolvers<void>();
+  const probe = spyOn(processStart, "processStartedAtAsync").mockImplementation(async () => {
+    reached.resolve();
+    return await processStart.psOutput(["-o", "pid=", "-p", String(process.pid)]) === null ? null : 100_000;
+  });
+  try {
+    const selected = resolve();
+    await reached.promise;
+    saturation.release();
+    expect(await selected).toBe(path);
+  } finally { probe.mockRestore(); await saturation.close(); }
+});
 
 /** A ready, owned process with Codex's argv[0], no rollout descriptor and no timer. */
 async function runningCodex(resume = false): Promise<ReturnType<typeof Bun.spawn>> {

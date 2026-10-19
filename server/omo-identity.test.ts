@@ -1,10 +1,12 @@
-import { expect, it } from "bun:test";
+import { expect, it, spyOn } from "bun:test";
 import { mkdirSync, mkdtempSync, readlinkSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { HerdrPane } from "../shared/protocol.ts";
 import { heldRuntime, omoProcessIdentity, omoSessionFolder, omoTranscriptsOfCwd, selectOmoTranscript } from "./omo.ts";
 import { processStartedAt } from "./process-start.ts";
+import * as processStart from "./process-start.ts";
+import { saturatedProcessProbes } from "../scripts/test-process-probes.ts";
 
 const holdRecord = (dir: string, id: string, pid: number, record: object): void => {
   const holders = join(dir, "session-holders", encodeURIComponent(id));
@@ -19,6 +21,88 @@ const writeSession = (dir: string, id: string, cwd: string): string => {
 };
 const info = (processes: { pid: number; argv?: string[]; cwd?: string }[]) => ({ process_info: { foreground_processes: processes } });
 const NEUTRAL = ["/opt/team-ai/bin/run"];
+
+it("rejects stale argv holders when the real process probe ceiling is occupied", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "herdr-omo-saturated-")));
+  const cwd = join(root, "project");
+  const agentDir = join(root, "agent");
+  const pid = 2_000_001;
+  holdRecord(join(agentDir, "sessions", omoSessionFolder(cwd)), "stale", pid, { pid, processStartedAtMs: 100_000, cwd });
+  const saturation = await saturatedProcessProbes();
+  const reached = Promise.withResolvers<void>();
+  const probe = spyOn(processStart, "processStartedAtAsync").mockImplementation(async () => {
+    reached.resolve();
+    return await processStart.psOutput(["-o", "pid=", "-p", String(process.pid)]) === null ? null : 110_000;
+  });
+  try {
+    const identity = omoProcessIdentity({ pid, argv: ["omo"], cwd }, cwd, root, () => [`OMO_CODING_AGENT_DIR=${agentDir}`]);
+    await reached.promise;
+    saturation.release();
+    expect((await identity)?.heldIds).toEqual([]);
+  } finally { probe.mockRestore(); await saturation.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+for (const births of [[null, 110_000], [100_000, 110_000]] as const) it(`rejects stale holders across birth probes ${births}`, async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "herdr-omo-birth-")));
+  const home = join(root, "home");
+  const cwd = join(root, "project");
+  const agentDir = join(root, "agent");
+  const dir = join(agentDir, "sessions", omoSessionFolder(cwd));
+  const pid = 2_000_001;
+  holdRecord(dir, "stale", pid, { pid, processStartedAtMs: 100_000, cwd });
+  const stale = writeSession(dir, "stale", cwd);
+  writeFileSync(stale, JSON.stringify({ type: "session", id: "stale", cwd, timestamp: new Date(50_000).toISOString() }) + "\n");
+  let calls = 0;
+  const probe = spyOn(processStart, "processStartedAtAsync").mockImplementation(async () => births[Math.min(calls++, 1)]!);
+  try {
+    const pane = { pane_id: "w:p1", cwd } as HerdrPane;
+    const out = await omoTranscriptsOfCwd(cwd, [pane], new Map([[pane.pane_id, info([{ pid, argv: ["omo"], cwd }])]]), home,
+      () => [`OMO_CODING_AGENT_DIR=${agentDir}`]);
+    expect(out.get(pane.pane_id)?.path).toBeNull();
+    expect(out.get(pane.pane_id)?.pending).toBeNull();
+  } finally { probe.mockRestore(); rmSync(root, { recursive: true, force: true }); }
+});
+
+it("never validates a holder when the process birth stays unknown", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "herdr-omo-unknown-")));
+  const cwd = join(root, "project");
+  const agentDir = join(root, "agent");
+  const pid = 2_000_001;
+  holdRecord(join(agentDir, "sessions", omoSessionFolder(cwd)), "stale", pid, { pid, processStartedAtMs: 100_000, cwd });
+  const probe = spyOn(processStart, "processStartedAtAsync").mockResolvedValue(null);
+  try {
+    expect((await omoProcessIdentity({ pid, argv: ["omo"], cwd }, cwd, root, () => [`OMO_CODING_AGENT_DIR=${agentDir}`]))?.heldIds).toEqual([]);
+  } finally { probe.mockRestore(); rmSync(root, { recursive: true, force: true }); }
+});
+
+it("discovers custom holders beyond eight concurrent birth probes on every refresh", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "herdr-omo-cap-")));
+  const home = join(root, "home");
+  const cwd = join(root, "project");
+  const agentDir = join(root, "agent");
+  const dir = join(agentDir, "sessions", omoSessionFolder(cwd));
+  const panes = Array.from({ length: 10 }, (_, index) => ({ pane_id: `w:p${index}`, cwd } as HerdrPane));
+  const infos = new Map(panes.map((pane, index) => {
+    const pid = 2_000_001 + index;
+    holdRecord(dir, `held-${index}`, pid, { pid, processStartedAtMs: 100_000, cwd });
+    writeSession(dir, `held-${index}`, cwd);
+    return [pane.pane_id, info([{ pid, argv: NEUTRAL, cwd }])] as const;
+  }));
+  let active = 0;
+  // Hold each admitted slot until the next microtask; simultaneous ninth probes are refused,
+  // exactly as the bounded macOS subprocess adapter does.
+  const probe = spyOn(processStart, "processStartedAtAsync").mockImplementation(async () => {
+    if (active >= 8) return null;
+    active++;
+    try { await Promise.resolve(); return 100_000; } finally { active--; }
+  });
+  try {
+    for (let refresh = 0; refresh < 2; refresh++) {
+      const out = await omoTranscriptsOfCwd(cwd, panes, infos, home, () => [`OMO_CODING_AGENT_DIR=${agentDir}`]);
+      expect(out.get("w:p9")?.path).toBe(realpathSync(join(dir, "2026-10-02T16-47-10-905Z_held-9.jsonl")));
+    }
+  } finally { probe.mockRestore(); rmSync(root, { recursive: true, force: true }); }
+});
 
 it.skipIf(process.platform !== "linux")("prefers the OS cwd over stale pane directories for a held custom session", async () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "herdr-omo-proc-cwd-")));

@@ -127,6 +127,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
     if (identity && !samePendingIdentity(identity, current)) {
       throw new HerdrError("pending_target_changed", "The pane's terminal or agent session changed; review the message before sending it again");
     }
+    current.processBirth ??= refreshedBirth;
     if (identity) {
       // Keep newly learned parts so a replacement before Enter is checked against them too.
       identity.session ??= current.session;
@@ -155,6 +156,19 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
     }
     if (current.agent && !["working", "idle", "done"].includes(pane.agent_status) && !collapsed) {
       throw new HerdrError("agent_not_ready", "The agent's current input state is not known");
+    }
+    // All birth/session/screen probes above yield. Observe the foreground again after
+    // the last one, not before it, so their old PID cannot authorize a replacement.
+    const finalPane = (await clientSnapshot()).panes.find((candidate) => candidate.pane_id === paneId);
+    const finalInfo = await paneProcessInfo(paneId);
+    const finalIdentity = finalPane ? {
+      ...current, ...pendingIdentity(finalPane),
+      processPid: finalInfo?.foreground_processes?.[0]?.pid ?? null,
+      omoSession: omo.sessionOf(paneId)?.sessionId ?? null,
+    } : null;
+    if (!finalIdentity || !samePendingIdentity(refreshed, finalIdentity)
+      || (identity && !samePendingIdentity(identity, finalIdentity))) {
+      throw new HerdrError("pending_target_changed", "The pane's terminal or agent session changed; review the message before sending it again");
     }
     authorizePending(owner, paneId, lease);
     return { pane, identity: current, working: current.agent !== null && (pane.agent_status === "working" || collapsed), screen };

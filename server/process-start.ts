@@ -12,14 +12,24 @@ export function parseElapsed(text: string): number | null {
 const PROBE_TIMEOUT_MS = 1500;
 const PROBE_OUTPUT_BYTES = 4096;
 
-// Refuse excess work rather than retaining a growing queue on status/request bursts.
+// Keep both children and waiting metadata requests bounded during status bursts.
 const MAX_PROBES = 8;
+const MAX_WAITING_PROBES = 64;
 let activeProbes = 0;
+const waitingProbes = new Set<() => void>();
 
 /** A hard deadline and streaming cap apply even if a descendant keeps stdout open. */
-export async function probeOutput(command: string[], timeoutMs = PROBE_TIMEOUT_MS, maxBytes = PROBE_OUTPUT_BYTES, env?: Record<string, string | undefined>): Promise<string | null> {
-  if (activeProbes >= MAX_PROBES) return null;
-  activeProbes++;
+export async function probeOutput(command: string[], timeoutMs = PROBE_TIMEOUT_MS, maxBytes = PROBE_OUTPUT_BYTES, env?: Record<string, string | undefined>, waitForSlot = false): Promise<string | null> {
+  const deadlineAt = Date.now() + timeoutMs;
+  if (activeProbes >= MAX_PROBES) {
+    if (!waitForSlot || waitingProbes.size >= MAX_WAITING_PROBES) return null;
+    const admitted = await new Promise<boolean>((resolve) => {
+      const admit = () => { clearTimeout(timer); activeProbes++; resolve(true); };
+      const timer = setTimeout(() => { waitingProbes.delete(admit); resolve(false); }, timeoutMs);
+      waitingProbes.add(admit);
+    });
+    if (!admitted) return null;
+  } else activeProbes++;
   let child: ReturnType<typeof Bun.spawn> | undefined;
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -28,7 +38,7 @@ export async function probeOutput(command: string[], timeoutMs = PROBE_TIMEOUT_M
     child = probe;
     reader = probe.stdout.getReader();
     const stream = reader;
-    const deadline = new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), timeoutMs); });
+    const deadline = new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), Math.max(0, deadlineAt - Date.now())); });
     const reading = (async (): Promise<string | null> => {
       const chunks: Uint8Array[] = [];
       let bytes = 0;
@@ -50,12 +60,14 @@ export async function probeOutput(command: string[], timeoutMs = PROBE_TIMEOUT_M
     try { child?.kill("SIGKILL"); } catch { /* already exited */ }
     void reader?.cancel().catch(() => {});
     activeProbes--;
+    const next = waitingProbes.values().next().value;
+    if (next) { waitingProbes.delete(next); next(); }
   }
 }
 
 /** A bounded, awaited `ps` read; a slow process table must not hold the event loop. */
 export function psOutput(args: string[], timeoutMs = PROBE_TIMEOUT_MS, env?: Record<string, string | undefined>): Promise<string | null> {
-  return probeOutput(["/bin/ps", ...args], timeoutMs, PROBE_OUTPUT_BYTES, env);
+  return probeOutput(["/bin/ps", ...args], timeoutMs, PROBE_OUTPUT_BYTES, env, true);
 }
 
 /**
