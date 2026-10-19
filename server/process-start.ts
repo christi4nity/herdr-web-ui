@@ -11,6 +11,7 @@ export function parseElapsed(text: string): number | null {
 
 const PROBE_TIMEOUT_MS = 1500;
 const PROBE_OUTPUT_BYTES = 4096;
+const PROBE_REAP_TIMEOUT_MS = 250;
 
 // Keep both children and waiting metadata requests bounded during status bursts.
 const MAX_PROBES = 8;
@@ -59,9 +60,25 @@ export async function probeOutput(command: string[], timeoutMs = PROBE_TIMEOUT_M
     // never signal the inspected PID or a process group. Do not wait on inherited pipes.
     try { child?.kill("SIGKILL"); } catch { /* already exited */ }
     void reader?.cancel().catch(() => {});
-    activeProbes--;
-    const next = waitingProbes.values().next().value;
-    if (next) { waitingProbes.delete(next); next(); }
+    const release = () => {
+      activeProbes--;
+      const next = waitingProbes.values().next().value;
+      if (next) { waitingProbes.delete(next); next(); }
+    };
+    if (child) {
+      let reapTimer: ReturnType<typeof setTimeout> | undefined;
+      let reaped = false;
+      const exited = child.exited.then(() => { reaped = true; });
+      try {
+        await Promise.race([exited, new Promise<void>((resolve) => {
+          reapTimer = setTimeout(resolve, PROBE_REAP_TIMEOUT_MS);
+        })]);
+      } finally { clearTimeout(reapTimer); }
+      // Bound the caller's cleanup wait, not the number of surviving children. A child
+      // stuck after KILL keeps its slot quarantined until the OS actually reaps it.
+      if (!reaped) void exited.then(release);
+      else release();
+    } else release();
   }
 }
 
