@@ -3,6 +3,7 @@ import { closeMention, createSubmitText, freeClaudeBox, freeHermesInput, InputDr
 import { createInputLane } from "./core/input.ts";
 import { type Client, connectionData, connectionOf, createConnections, presenceOf, send, type SocketData } from "./core/connections.ts";
 import { createStatusHub } from "./core/status.ts";
+import { ClientConnectionLog } from "./client-connection-log.ts";
 import { handlePaneRequest, paneContext } from "./pane-routes.ts";
 import { randomBytes } from "node:crypto";
 import { readHerdrProfiles, type HerdrMachineProfile } from "./herdr-profiles.ts";
@@ -1118,6 +1119,7 @@ export function createServer(
   });
 
   const envPort = process.env["PORT"];
+  const clientConnectionLog = new ClientConnectionLog();
   const server = Bun.serve<SocketData>({
     port: options.port ?? (envPort ? Number(envPort) : DEFAULT_PORT),
     hostname,
@@ -1192,7 +1194,8 @@ export function createServer(
       // it. The endpoint it registers is https-only (server/push.ts), and that is the
       // protection: a watch device's subscription is delivered every status change anyway.
       // /api/push/test stays with a session that can drive only because it is a mutation.
-      const ownPreferences = pathname === "/api/auth" || pathname === "/api/push/subscribe";
+      // A watch device may report its own connection metadata, never terminal input or file data.
+      const ownPreferences = pathname === "/api/auth" || pathname === "/api/push/subscribe" || pathname === "/api/connection-diagnostics";
       // a repository's changes are file contents too: the patch of a credential file is that file
       const repositoryDiff = /^\/api\/(?:machines\/[^/]+\/)?workspace\/diff\//.test(pathname);
       if (readOnly && (fileRead || directoryListing || repositoryDiff || mutating && !ownPreferences)) {
@@ -1275,6 +1278,7 @@ export function createServer(
       if (pathname === "/api/portal" || pathname.startsWith("/api/portal/")) {
         return handlePortalRequest(request, pathname, options.portal, { port: bunServer.port ?? DEFAULT_PORT, tokenSet: token !== "", serveOnly });
       }
+      if (pathname === "/api/connection-diagnostics") return clientConnectionLog.handle(request, client ?? "unknown");
       if (pathname === "/api/telemetry") return handleTelemetryRequest(request, options.telemetry);
       // what every browser of this server shares; a watching device reads it and cannot change it (above)
       if (pathname === "/api/preferences") return handlePreferencesRequest(request, preferences);

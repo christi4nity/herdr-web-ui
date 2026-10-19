@@ -219,6 +219,28 @@ the child's environment before `exec` (`OMO_CODING_AGENT_DIR=… my-launcher`): 
 variable the process sets only in-process later may never appear in
 `/proc/<pid>/environ`, which reports the environment the kernel recorded at `exec`.
 
+## Browser connection diagnostics
+
+The browser keeps at most 32 connection breadcrumbs in memory. A missed heartbeat, close/error,
+pagehide, stuck-closing socket, held input or unanswered send can send the latest 16 records to
+`POST /api/connection-diagnostics` on this app's own origin. Healthy traffic does not generate an
+access log. An opaque, per-connection-object ID and connection epoch correlate lifecycle events,
+visibility/online flags, socket states, probe timing, pending counts and numeric receipt IDs.
+The browser's online flag is not proof of network reachability; reports are marked client-reported.
+
+Reports never include message/secret text, payloads, terminal output, close reasons, URLs,
+credentials or PC names. They are unrelated to anonymous install/update telemetry and never leave
+this server. Browser storage is not used. Reports are best effort: a failed HTTP attempt retains
+bounded metadata for a later connection event, but a full app/page restart can lose unsent records.
+The HTTP attempt is bounded to five seconds and uses same-origin credentials, no redirects and
+keepalive for pagehide. Explicit disposal stops new reports; no user input is retained or retried.
+
+The authenticated, same-origin endpoint accepts watch-device reports, but no terminal input.
+It revalidates and normalizes every field, accepts at most 16 events and 8192 bytes, and limits one
+peer to four reports/minute and the whole server to 16/minute with 128 peer buckets. A valid report
+writes one `client.connection_trace` JSON line to stderr. Old/locked endpoints disable reporting;
+rate limits back it off without affecting the socket or composer. The demo consumes reports locally.
+
 ## Conversation refresh
 
 The chat reads `/api/pane/conversation` after a `conversation-changed` WebSocket frame.
