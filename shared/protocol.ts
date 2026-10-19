@@ -1233,7 +1233,7 @@ export type ClientMessage =
 export type ClientConnectionEventKind = "connect" | "open" | "connect_timeout" | "close" | "socket_error"
   | "pagehide" | "pageshow" | "hidden" | "visible" | "online" | "probe" | "probe_retry"
   | "probe_overdue" | "probe_drop" | "pong" | "submit_sent" | "submit_result" | "submit_timeout"
-  | "submit_disconnect" | "input_held" | "closing_wait";
+  | "submit_disconnect" | "input_held" | "probe_input_blocked" | "closing_wait";
 export interface ClientConnectionEvent {
   seq: number;
   at: number;

@@ -1,7 +1,7 @@
 import type { ClientConnectionEvent, ClientConnectionEventKind, ClientConnectionTrace } from "../shared/protocol.ts";
 import { badRequest, jsonResponse } from "./http.ts";
 
-const KINDS: readonly ClientConnectionEventKind[] = ["connect", "open", "connect_timeout", "close", "socket_error", "pagehide", "pageshow", "hidden", "visible", "online", "probe", "probe_retry", "probe_overdue", "probe_drop", "pong", "submit_sent", "submit_result", "submit_timeout", "submit_disconnect", "input_held", "closing_wait"];
+const KINDS: readonly ClientConnectionEventKind[] = ["connect", "open", "connect_timeout", "close", "socket_error", "pagehide", "pageshow", "hidden", "visible", "online", "probe", "probe_retry", "probe_overdue", "probe_drop", "pong", "submit_sent", "submit_result", "submit_timeout", "submit_disconnect", "input_held", "probe_input_blocked", "closing_wait"];
 const MAX_BYTES = 8192;
 const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
 const integer = (value: unknown, max = Number.MAX_SAFE_INTEGER): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= max;

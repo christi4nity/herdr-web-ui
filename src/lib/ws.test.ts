@@ -1881,3 +1881,24 @@ it("records an unanswered submit deadline without its input or an automatic retr
     expect(submissions(socket)).toHaveLength(1);
   } finally { client.close(); jest.useRealTimers(); }
 });
+
+it("records actual probe-blocked input once, not readiness polling or the text/chord", () => {
+  jest.useFakeTimers();
+  const { client, socket, reports } = tracedClient(["ping", "input-ready"]);
+  try {
+    client.attach("w1:p1", 80, 24);
+    socket.receive({ type: "input-ready", pane_id: "w1:p1", ready: true });
+    expect(client.canInput("w1:p1")).toBe(true);
+    client.wake();
+    for (let i = 0; i < 100; i++) expect(client.canInput("w1:p1")).toBe(false);
+    expect(reports).toHaveLength(0);
+    expect(client.sendInput("w1:p1", "private-typed-text")).toBe(false);
+    expect(client.sendKeys("w1:p1", ["private-chord"])).toBe(false);
+    expect(reports).toHaveLength(1);
+    expect(reports[0]!.events.at(-1)).toMatchObject({ kind: "probe_input_blocked", socket_state: 1 });
+    expect(JSON.stringify(reports)).not.toContain("private-");
+    expect(submissions(socket)).toEqual([]);
+    socket.receive({ type: "pong", id: pings(socket).at(-1)!.id });
+    expect(client.canInput("w1:p1")).toBe(true);
+  } finally { client.close(); jest.useRealTimers(); }
+});

@@ -222,6 +222,7 @@ export class HerdrSocket {
 
   private readonly trace: ConnectionTrace;
   private connectionEpoch = 0;
+  private probeRefusalRecorded = false;
 
   constructor(url: string = defaultUrl()) {
     this.url = url;
@@ -470,6 +471,7 @@ export class HerdrSocket {
     const socket = this.socket;
     if (!socket || socket.readyState !== WebSocket.OPEN || !this.pingKnown || this.probeTimer !== null) return;
     this.connectionState = "probing";
+    this.probeRefusalRecorded = false;
     // a paused probe goes on with a fresh ping: whoever waits on it keeps waiting
     if (this.probePaused) this.probePaused = false;
     else this.probeDone = new Promise((resolve) => { this.markProbeDone = resolve; });
@@ -826,7 +828,7 @@ export class HerdrSocket {
 
   /** `stop`: the composer's Stop, a lone ESC the bridge keeps ahead of the next message. */
   sendInput(paneId: string, text: string, stop = false): boolean {
-    if (!this.canInput(paneId)) return false;
+    if (!this.canInput(paneId)) { this.traceProbeRefusal(); return false; }
     try { this.rawSend(stop ? { type: "input", pane_id: paneId, text, stop: true } : { type: "input", pane_id: paneId, text }); return true; } catch { return false; }
   }
 
@@ -948,8 +950,14 @@ export class HerdrSocket {
     this.requests.clear();
   }
 
+  private traceProbeRefusal(): void {
+    if (!this.probing || this.probeRefusalRecorded) return;
+    this.probeRefusalRecorded = true;
+    this.trace.record("probe_input_blocked", {}, true);
+  }
+
   sendKeys(paneId: string, keys: string[]): boolean {
-    if (!this.canInput(paneId)) return false;
+    if (!this.canInput(paneId)) { this.traceProbeRefusal(); return false; }
     try { this.rawSend({ type: "keys", pane_id: paneId, keys }); return true; } catch { return false; }
   }
 
