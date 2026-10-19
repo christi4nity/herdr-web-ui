@@ -3,6 +3,7 @@ import { closeMention, createSubmitText, freeClaudeBox, freeHermesInput, InputDr
 import { createInputLane } from "./core/input.ts";
 import { type Client, connectionData, connectionOf, createConnections, presenceOf, send, type SocketData } from "./core/connections.ts";
 import { createStatusHub } from "./core/status.ts";
+import { ConnectionDiagnostics } from "./connection-diagnostics.ts";
 import { handlePaneRequest, paneContext } from "./pane-routes.ts";
 import { randomBytes } from "node:crypto";
 import { readHerdrProfiles, type HerdrMachineProfile } from "./herdr-profiles.ts";
@@ -1118,6 +1119,7 @@ export function createServer(
   });
 
   const envPort = process.env["PORT"];
+  const websocketDiagnostics = new ConnectionDiagnostics("websocket");
   const server = Bun.serve<SocketData>({
     port: options.port ?? (envPort ? Number(envPort) : DEFAULT_PORT),
     hostname,
@@ -2198,7 +2200,11 @@ export function createServer(
         }
       },
 
-      close(client) {
+      close(client, code) {
+        if (!stopped && code !== 1000 && code !== 1001) {
+          const operation = client.data.relay ? "remote" : "local";
+          websocketDiagnostics.failed(operation, "closed", { operation, close_code: code });
+        }
         end(client, "closed");
       },
     },

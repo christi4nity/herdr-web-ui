@@ -12,6 +12,22 @@ bun run dev      # Vite on :5173, proxies /api and /ws
 
 `bun run server` and `bun run dev` never update themselves; only `bun run start` and the plugin run the update supervisor.
 
+## Connection diagnostics
+
+Transport failures write one JSON line to the server's standard error, with an ISO timestamp,
+an opaque failure-episode ID and a fixed event name (`herdr.rpc.failed`, `machine.local.failed`,
+`machine.remote.failed` or `websocket.failed`). RPC records include the method, request ID,
+elapsed time, connection time when known, deadline and other in-flight request count. Compare the
+request ID with Herdr's own log; a timeout alone does not identify which process stalled.
+
+A later successful RPC or machine connection writes one `.recovered` line. Repeated failures are
+summarized at most once every 30 seconds per RPC method/peer or machine, with suppressed counts;
+bookkeeping retains at most 128 failing keys per logger. Abnormal browser WebSocket closes are
+coalesced separately for local and relayed connections; normal closes and server shutdown are quiet.
+The close reason, input, credentials, peer names, socket paths and raw exception messages are never
+included. A remote machine's opaque UUID may appear, not its name or SSH address. These records are
+not a per-request HTTP access log and do not add timestamps to older console messages.
+
 ## Checks
 
 Production builds create Brotli (`.br`) and gzip (`.gz`) sidecars for JavaScript and CSS under
