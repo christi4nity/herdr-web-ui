@@ -418,6 +418,10 @@ async function omoTranscriptsResolved(cwd: string, panes: readonly PaneResolutio
     // every identity came from verified holders alone: hints and inference never apply
     const custom = omos.every(({ identity }) => identity.custom);
     const starts = await Promise.all(omos.map(({ process }) => processStartedAtAsync(process.pid)));
+    // Hints and herdr's report need every process's birth: one unknown birth (outside Windows,
+    // which never knows one) drops that process's holder, and a sibling launcher's hint must not
+    // then restore the session the pane has left.
+    const complete = globalThis.process.platform === "win32" || starts.every((start) => start !== null);
     const owned = omos.map(({ identity }) => identity.agentDir);
     for (const agentDir of owned) agentDirs.add(agentDir);
     const dirs = omos.map((omo, index) => sessionDir(omo.cwd, owned[index]!));
@@ -432,7 +436,7 @@ async function omoTranscriptsResolved(cwd: string, panes: readonly PaneResolutio
       return ids.map((id) => ({ id, dir: dirs[index]!, store: stores[index] ?? null }));
     }));
     for (const [index, { process, identity }] of omos.entries()) {
-      if (!identity.custom && (starts[index] !== null || globalThis.process.platform === "win32")) ids.push(...resumedIds(process.argv ?? []));
+      if (!identity.custom && complete) ids.push(...resumedIds(process.argv ?? []));
       // Only an open file in the session store is evidence: omo also holds its background
       // tasks' logs (<cwd>/.omo/senpi-task/logs/*.jsonl) open, and one of those pinned the
       // pane to a path no candidate matches, so the chat lost the transcript mid-session.
@@ -448,7 +452,7 @@ async function omoTranscriptsResolved(cwd: string, panes: readonly PaneResolutio
       }
     }
     const session = pane.agent_session;
-    if (!custom && (starts.every((start) => start !== null) || globalThis.process.platform === "win32") && session?.agent === "omo" && session.value) {
+    if (!custom && complete && session?.agent === "omo" && session.value) {
       if (session.kind === "path") paths.push(session.value);
       if (session.kind === "id") ids.push(session.value);
     }

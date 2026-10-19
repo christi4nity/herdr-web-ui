@@ -63,6 +63,26 @@ for (const platform of ["linux", "win32"] as const) it(`does not resurrect a lau
   } finally { probe.mockRestore(); Object.defineProperty(process, "platform", originalPlatform); rmSync(root, { recursive: true, force: true }); }
 });
 
+it("does not let a launcher's hint restore the session its engine left when only the engine's birth is unknown", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "herdr-omo-partial-birth-")));
+  const cwd = join(root, "project");
+  const agentDir = join(root, "agent");
+  const dir = join(agentDir, "sessions", omoSessionFolder(cwd));
+  const launcher = 2_000_001, engine = 2_000_002;
+  writeSession(dir, "session-A", cwd);
+  holdRecord(dir, "session-B", engine, { pid: engine, processStartedAtMs: 100_000, cwd });
+  const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform");
+  if (!originalPlatform) throw new Error("Missing process platform descriptor");
+  Object.defineProperty(process, "platform", { value: "linux" });
+  const probe = spyOn(processStart, "processStartedAtAsync").mockImplementation(async (pid: number) => pid === launcher ? 100_000 : null);
+  try {
+    const pane = { pane_id: "w:p1", cwd } as HerdrPane;
+    const processes = [{ pid: launcher, argv: ["omo", "--session-id", "session-A"], cwd }, { pid: engine, argv: ["omo"], cwd }];
+    const result = (await omoTranscriptsOfCwd(cwd, [pane], new Map([[pane.pane_id, info(processes)]]), root, () => [`OMO_CODING_AGENT_DIR=${agentDir}`])).get(pane.pane_id);
+    expect(result?.path).toBeNull();
+  } finally { probe.mockRestore(); Object.defineProperty(process, "platform", originalPlatform); rmSync(root, { recursive: true, force: true }); }
+});
+
 for (const births of [[null, 110_000], [100_000, 110_000]] as const) it(`rejects stale holders across birth probes ${births}`, async () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "herdr-omo-birth-")));
   const home = join(root, "home");
