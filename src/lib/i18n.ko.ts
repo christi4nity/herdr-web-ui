@@ -639,6 +639,7 @@ export const KO: Record<string, string> = {
 
   // ---- prompt card ----
   "Submit": "제출",
+  "Skip question": "질문 건너뛰기",
   "Submit ({n})": "제출 ({n})",
   "Recommended": "추천",
   "More than one could be picked": "여러 개를 고를 수 있었음",
@@ -785,6 +786,7 @@ export const KO: Record<string, string> = {
   // ---- terminal ----
   "Codex has a question open in the terminal: answer it above, or close it there (alt+↓) to message Codex.": "Codex가 터미널에 질문을 열어 두었습니다. 위에서 답하거나, 터미널에서 닫으면(alt+↓) Codex에게 메시지를 보낼 수 있습니다.",
   "The question on screen changed; check it and answer again.": "화면의 질문이 바뀌었습니다. 확인하고 다시 답하세요.",
+  "Not updated: the question on screen may have changed.": "갱신되지 않음: 화면의 질문이 바뀌었을 수 있습니다.",
   "NOT RESTORED": "복원 실패",
   "herdr could not restore this pane": "herdr가 이 패널을 복원하지 못했습니다",
   "Select a pane to open its terminal": "터미널을 열 패널을 선택하세요",
@@ -863,6 +865,7 @@ export const KO: Record<string, string> = {
   "That item no longer exists on the PC. Refresh and try again.": "그 항목은 PC에 더 이상 없습니다. 새로 고친 뒤 다시 시도하세요.",
   "It changed on the PC while you were acting. Check it and try again.": "작업하는 동안 PC에서 내용이 바뀌었습니다. 확인한 뒤 다시 시도하세요.",
   "The PC took too long to answer. Try again.": "PC가 너무 오래 응답하지 않았습니다. 다시 시도하세요.",
+  "OpenCode did not confirm the answer. Check the question before sending again.": "OpenCode에서 답변을 받았는지 확인되지 않았습니다. 다시 보내기 전에 질문을 확인하세요.",
   "The PC could not do that. Try again; if it keeps failing, restart herdr web ui on the PC.": "PC에서 그 작업을 할 수 없었습니다. 다시 시도하고, 계속 실패하면 PC에서 herdr web ui를 다시 시작하세요.",
   "Can't reach the PC. Check your connection, then try again.": "PC에 연결할 수 없습니다. 연결을 확인한 뒤 다시 시도하세요.",
   "Something went wrong. Try again.": "문제가 생겼습니다. 다시 시도하세요.",

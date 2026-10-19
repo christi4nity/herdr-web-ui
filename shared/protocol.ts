@@ -76,6 +76,9 @@ export type { Machine, MachineEvent, PaneTarget, SetupJob, SetupRequest, SetupAc
  *  POST   /api/updates/install           -> 202 { accepted: true }
  *         Update POSTs require X-Herdr-Update: 1, same-origin browser requests,
  *         and the usual token gate. Managed starts only; status is polled during restart.
+ *  POST   /api/connection-diagnostics    -> 204; ClientConnectionTrace, metadata only, same-origin
+ *         and authenticated (watch devices included). 400 invalid_trace, 413 trace_too_large,
+ *         429 trace_rate_limited. At most 16 events and 8192 bytes; never input or credentials.
  *  GET    /api/telemetry                 -> TelemetryStatus (shared/telemetry.ts), no-store
  *  POST   /api/telemetry                 -> TelemetryStatus; TelemetryChange (shared/telemetry.ts):
  *         { enabled?, notice_seen?: true, notice_version?, settings? }. A notice acknowledgement
@@ -1056,6 +1059,8 @@ export interface InteractivePrompt {
   body: string | null;
   options: InteractivePromptOption[];
   multi_select: boolean;
+  /** Native OpenCode question explicitly marked required: false; an empty answer skips it. */
+  optional?: true;
   /** index of the "type your own answer" option, when the menu has one */
   custom_option_index: number | null;
   /** a question in Codex's queue while Codex keeps working: only the card answers it. Collapsed,
@@ -1068,6 +1073,14 @@ export interface InteractivePrompt {
   /** the answers a review asks to submit (Claude, omp), each question with what was picked for it,
    * read whole where the terminal wrapped them. A question cut off above the pane's top is null */
   answers?: InteractivePromptAnswer[];
+  /** whether the prompt can step back to a previous question in a multi-step form */
+  can_step_back?: boolean;
+  /** previously selected option index for a single-select step, if any */
+  default_option_index?: number | null;
+  /** previously selected option indices for a multi-select step, if any */
+  default_option_indices?: number[];
+  /** previously entered custom text for a step, if any */
+  default_custom_text?: string;
   /** the last-resort card for a blocked pane no reader knows: answered with its own buttons only,
    * so a message typed in the chat still goes to the agent as typed */
   fallback?: true;
@@ -1093,13 +1106,17 @@ export interface InteractivePromptOption {
   description: string | null;
 }
 
-/** POST /api/pane/prompt/answer body. Exactly one of option_index / option_indices / custom_text. */
+/** POST /api/pane/prompt/answer body. One answer or navigation action; native OpenCode multiselect may combine option_indices and custom_text. */
 export interface PromptAnswer {
   pane_id: string;
   prompt_id: string;
   option_index?: number;
   option_indices?: number[];
   custom_text?: string;
+  step_back?: boolean;
+  step_index?: number;
+  /** Unsent edits for the current OpenCode step, saved only when navigating back. */
+  draft?: { option_indices: number[]; custom_text: string };
 }
 
 /**
@@ -1225,6 +1242,32 @@ export type ClientMessage =
    * and drops a socket that stays silent: a half-open one still reads OPEN in the browser. A remote
    * PC's socket relays it unchanged, so the remote server's snapshot decides whether it is sent. */
   | { type: "ping"; id: number };
+
+/** Local-only diagnostic metadata. This contract never contains a message, URL or credential. */
+export type ClientConnectionEventKind = "connect" | "open" | "connect_timeout" | "close" | "socket_error"
+  | "pagehide" | "pageshow" | "hidden" | "visible" | "online" | "probe" | "probe_retry"
+  | "probe_overdue" | "probe_drop" | "pong" | "submit_sent" | "submit_result" | "submit_timeout"
+  | "submit_disconnect" | "input_held" | "probe_input_blocked" | "closing_wait";
+export interface ClientConnectionEvent {
+  seq: number;
+  at: number;
+  connection: number;
+  kind: ClientConnectionEventKind;
+  socket_state: number | null;
+  visibility: "visible" | "hidden" | "unknown";
+  online: boolean | null;
+  code?: number;
+  elapsed_ms?: number;
+  pending?: number;
+  request_id?: number;
+  attempt?: number;
+  result?: "ok" | "refused";
+}
+export interface ClientConnectionTrace {
+  client_id: string;
+  target: "local" | "remote";
+  events: ClientConnectionEvent[];
+}
 
 /** What a server supports beyond the base protocol, listed in its first snapshot; older bridges list nothing. */
 export type ServerFeature = "submit" | "pending-input" | "pending-hold" | "secret-input" | "input-ready" | "take-over" | "watch" | "conversation-watch" | "ping";

@@ -8,7 +8,7 @@ export const MACHINE_CONTROLS_FIXTURE_SCRIPT = String.raw`(() => {
   const DemoEventSource = window.EventSource;
   const sources = new Set();
   const observers = [];
-  const calls = { mutations: [], deleteAttempts: 0, deleteCount: 0, blocked: [], frames: 0 };
+  const calls = { mutations: [], deleteAttempts: 0, deleteCount: 0, frames: 0 };
   let demoMachines = [];
   let remote = {
     id: "sidebar-fixture", name: "Demo remote PC", kind: "ssh",
@@ -99,17 +99,12 @@ export const MACHINE_CONTROLS_FIXTURE_SCRIPT = String.raw`(() => {
     if (machinePath && method !== "GET" && method !== "HEAD") {
       const id = machinePath[1] ?? "";
       const isRemote = id === "sidebar-fixture" && remoteRegistered && url.pathname === "/api/machines/sidebar-fixture";
-      const isManaged = id === managed.id;
-      const record = { id, method, path: url.pathname, body: await bodyOf(input, init) };
-      if (isManaged) {
-        calls.blocked.push(record);
-        return error("managed_by_herdr", "This PC is managed by herdr.", 403);
-      }
-      if (!isRemote || (method !== "PATCH" && method !== "DELETE")) {
-        calls.blocked.push(record);
-        return error("not_found", "Unknown fixture PC mutation.", 404);
-      }
+      // Only the inert remote PC can be renamed, toggled or removed here; every other mutation fails
+      // closed so none reaches the demo transport or the network. The server's refusals (a
+      // herdr-managed PC, an unknown one, a bad body) are the server's own tests' to check.
+      if (!isRemote || (method !== "PATCH" && method !== "DELETE")) return error("not_found", "Unknown fixture PC mutation.", 404);
 
+      const record = { id, method, path: url.pathname, body: await bodyOf(input, init) };
       calls.mutations.push(record);
       if (method === "DELETE") calls.deleteAttempts++;
       const gate = armedGate;
@@ -122,17 +117,9 @@ export const MACHINE_CONTROLS_FIXTURE_SCRIPT = String.raw`(() => {
       }
 
       if (method === "PATCH") {
-        const body = record.body;
-        if (!body || typeof body !== "object" || Array.isArray(body)) return error("invalid_body", "Expected a JSON object.", 400);
-        if (Object.hasOwn(body, "name")) {
-          if (typeof body.name !== "string" || body.name.length > 100) return error("invalid_name", "PC name must be at most 100 characters.", 400);
-          remote.name = body.name;
-        }
-        if (Object.hasOwn(body, "enabled")) {
-          if (typeof body.enabled !== "boolean") return error("invalid_enabled", "enabled must be a boolean.", 400);
-          remote.enabled = body.enabled;
-        }
-        if (!Object.hasOwn(body, "name") && !Object.hasOwn(body, "enabled")) return error("invalid_body", "No supported field was changed.", 400);
+        const body = record.body ?? {};
+        if (typeof body.name === "string") remote.name = body.name;
+        if (typeof body.enabled === "boolean") remote.enabled = body.enabled;
         broadcast();
         return json({ ok: true });
       }

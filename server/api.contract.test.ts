@@ -1,6 +1,6 @@
 import { describe, expect, it, beforeAll, afterAll } from "bun:test";
 import { Database } from "bun:sqlite";
-import { appendFileSync, chmodSync, copyFileSync, mkdirSync, mkdtempSync, existsSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, copyFileSync, mkdirSync, mkdtempSync, existsSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { ConversationMonitor } from "./conversation-monitor.ts";
@@ -60,6 +60,12 @@ describe("Grok conversation API", () => {
     writeFileSync(path, user + call + output("x".repeat(5000)));
     const events = join(directory, "events.jsonl");
     writeFileSync(events, "");
+    // An older session kept open beside the reported one. It must not hide the reported file.
+    const retained = join(root, "sessions", "%2Ffictional", "00000000-0000-4000-8000-000000000003", "events.jsonl");
+    mkdirSync(join(retained, ".."), { recursive: true });
+    writeFileSync(retained, "");
+    utimesSync(retained, 100, 100);
+    utimesSync(events, 200, 200);
     // A native stand-in owns the fd evidence and only sleeps; no model or user's store.
     const executable = join(root, "grok");
     const nativeExecutable = join(root, "grok-1.0.52-linux-x86_64");
@@ -68,7 +74,7 @@ describe("Grok conversation API", () => {
     let app: ReturnType<typeof createServer> | undefined;
     try {
       const paneId = created.root_pane.pane_id;
-      await herdrRpc("pane.send_text", { pane_id: paneId, text: `${executable} 600 3<${events}\n` });
+      await herdrRpc("pane.send_text", { pane_id: paneId, text: `${executable} 600 3<${events} 4<${retained}\n` });
       for (const deadline = Date.now() + 10_000;;) {
         if ((await sessionSnapshot()).panes.find((pane) => pane.pane_id === paneId)?.agent === "grok") break;
         if (Date.now() > deadline) throw new Error("fixture Grok process did not start");

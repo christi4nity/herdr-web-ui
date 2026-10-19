@@ -20,7 +20,7 @@ import { bridgeAgentNews, MachineManager } from "../machines.ts";
 import { omoPanes } from "../omo.ts";
 import { OMO_ALIASES, OmoStatus } from "../omo-status.ts";
 import type { PendingInputs } from "../pending-input.ts";
-import { promptWaitEnded } from "../prompt.ts";
+import { promptWaitEnded, type OpenCodePromptState } from "../prompt.ts";
 import { type AlertTiming, createPushService, defaultStateDir } from "../push.ts";
 import { SessionPlans } from "../session-plan.ts";
 import type { Telemetry } from "../telemetry.ts";
@@ -42,6 +42,7 @@ export function createStatusHub<Lease>({ options, devices, clients, present, pen
     pushLoopbackHttp?: boolean;
     backgroundWait?: { grace: number; limit: number };
     statusNow?: () => number;
+    openCodeState?: OpenCodePromptState;
   };
   devices: DeviceStore;
   clients: Set<Client>;
@@ -108,6 +109,7 @@ export function createStatusHub<Lease>({ options, devices, clients, present, pen
   });
   /** herdr's snapshot with OmO's and GJC's own status in it: what the completion tracker and web push are given */
   const rawSnapshot = async (): Promise<SessionSnapshot> => {
+    const promptCheckpoint = options.openCodeState?.checkpoint();
     const snapshot = await omoSnapshot();
     await gjc.refresh(snapshot.panes);
     const named = gjc.apply(omo.apply(snapshot));
@@ -116,6 +118,7 @@ export function createStatusHub<Lease>({ options, devices, clients, present, pen
     void claudeAgents.refresh(named.panes).catch(() => undefined).then(() => plans.refresh(named.panes)).catch(() => undefined);
     // an agent this server started has had no turn yet: its start screen is no work (launched-agents.ts)
     for (const pane of named.panes) pane.agent_status = launchedAgents.settle(pane.pane_id, pane.agent_status);
+    options.openCodeState?.reconcile(named.panes, promptCheckpoint);
     return named;
   };
   const backgroundOf = (paneId: string): number => omo.backgroundOf(paneId) || claudeAgents.countOf(paneId);
@@ -235,6 +238,7 @@ export function createStatusHub<Lease>({ options, devices, clients, present, pen
 
   const collector = startStatusCollector({
     onStatus: (paneId, read, agent, replay) => {
+      if (agent !== "opencode") options.openCodeState?.forget(paneId);
       const raw = launchedAgents.settle(paneId, read);
       gjc.poll();
       // read back from a snapshot around a gap between subscriptions. An OmO pane's status there
@@ -310,6 +314,7 @@ export function createStatusHub<Lease>({ options, devices, clients, present, pen
       push.resync(panes.map((pane) => ({ ...pane, agent_status: alertStatus(settled(pane), waits.waiting(pane.pane_id)) })), newer);
     },
     onPaneEnded: (paneId) => {
+      options.openCodeState?.forget(paneId);
       if (usageLogin.ended(paneId)) usage.invalidate();
       holdPendingPane(paneId, { code: "pane_not_found", message: "The pane ended; its pending messages were not sent" });
       pending.forget(paneId);

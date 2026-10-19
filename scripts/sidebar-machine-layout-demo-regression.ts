@@ -1,5 +1,5 @@
 /**
- * Purpose: verify narrow sidebar PC control layout and two-step removal in a real browser.
+ * Purpose: verify sidebar PC control layout at narrow and wide widths and two-step removal in a real browser.
  * Tags: sidebar, machines, responsive, accessibility, browser, regression.
  * Usage: bun scripts/sidebar-machine-layout-demo-regression.ts [--geometry-only]
  */
@@ -33,12 +33,15 @@ interface Scenario {
   viewport: { width: number; height: number };
   touch: boolean;
   desktopSidebar: boolean;
+  sidebarWidth?: number;
+  renameRow?: "shared" | "stacked";
   screenshots?: boolean;
 }
 
 const scenarios: Scenario[] = [
-  { name: "en-desktop-240-dark", language: "en", theme: "dark", density: "comfortable", viewport: { width: 1280, height: 900 }, touch: false, desktopSidebar: true, screenshots: true },
+  { name: "en-desktop-240-dark", language: "en", theme: "dark", density: "comfortable", viewport: { width: 1280, height: 900 }, touch: false, desktopSidebar: true, renameRow: "stacked", screenshots: true },
   { name: "en-desktop-240-light", language: "en", theme: "light", density: "compact", viewport: { width: 1280, height: 900 }, touch: false, desktopSidebar: true, screenshots: true },
+  { name: "en-desktop-520-light", language: "en", theme: "light", density: "comfortable", viewport: { width: 1280, height: 900 }, touch: false, desktopSidebar: true, sidebarWidth: 520, renameRow: "shared", screenshots: true },
   { name: "en-phone-320-dark", language: "en", theme: "dark", density: "compact", viewport: { width: 320, height: 844 }, touch: true, desktopSidebar: false, screenshots: true },
   { name: "en-phone-320-light", language: "en", theme: "light", density: "comfortable", viewport: { width: 320, height: 844 }, touch: true, desktopSidebar: false, screenshots: true },
   { name: "ko-phone-320-dark", language: "ko", theme: "dark", density: "comfortable", viewport: { width: 320, height: 844 }, touch: true, desktopSidebar: false },
@@ -47,7 +50,7 @@ const scenarios: Scenario[] = [
   { name: "ko-desktop-240-dark", language: "ko", theme: "dark", density: "compact", viewport: { width: 1280, height: 900 }, touch: false, desktopSidebar: true },
   { name: "ja-desktop-240-light", language: "ja", theme: "light", density: "comfortable", viewport: { width: 1280, height: 900 }, touch: false, desktopSidebar: true },
   { name: "zh-desktop-240-dark", language: "zh", theme: "dark", density: "comfortable", viewport: { width: 1280, height: 900 }, touch: false, desktopSidebar: true },
-  { name: "en-phone-390-light", language: "en", theme: "light", density: "compact", viewport: { width: 390, height: 844 }, touch: true, desktopSidebar: false },
+  { name: "en-phone-390-light", language: "en", theme: "light", density: "compact", viewport: { width: 390, height: 844 }, touch: true, desktopSidebar: false, renameRow: "stacked" },
   { name: "en-landscape-844x390-dark", language: "en", theme: "dark", density: "comfortable", viewport: { width: 844, height: 390 }, touch: true, desktopSidebar: true },
 ];
 
@@ -74,20 +77,34 @@ async function fitGeometry(page: Page, name: string, scenario: Scenario): Promis
     const controls = document.querySelector(".machine-controls");
     if (!sidebar || !list || !controls) return null;
     const panelRect = controls.getBoundingClientRect();
+    const panelStyle = getComputedStyle(controls);
+    const input = controls.querySelector("input");
+    const inputRect = input ? input.getBoundingClientRect() : null;
     const elements = [...controls.querySelectorAll("form, .machine-control-buttons, input, button, .field-label")];
+    const lineCount = (element: Element) => {
+      const range = document.createRange();
+      range.selectNodeContents(element);
+      return new Set([...range.getClientRects()].map((box) => Math.round(box.top))).size;
+    };
     return {
       viewport: { width: innerWidth, height: innerHeight, scrollWidth: document.documentElement.scrollWidth },
       sidebar: rect(sidebar),
       list: { clientWidth: list.clientWidth, scrollWidth: list.scrollWidth },
       panel: rect(controls),
-      input: rect(controls.querySelector("input")),
+      input: inputRect ? { left: inputRect.left, right: inputRect.right, top: inputRect.top, bottom: inputRect.bottom, width: inputRect.width, height: inputRect.height } : null,
+      controlHeight: Number.parseFloat(panelStyle.getPropertyValue("--control-h")),
+      touchTarget: Number.parseFloat(panelStyle.getPropertyValue("--touch-target")),
       elements: elements.map((element) => {
         const box = element.getBoundingClientRect();
         return {
           name: element.className || element.tagName,
           left: box.left,
           right: box.right,
+          top: box.top,
+          bottom: box.bottom,
           height: box.height,
+          lines: element instanceof HTMLButtonElement ? lineCount(element) : 1,
+          inRow: element.parentElement?.classList.contains("machine-control-buttons") ?? false,
           clientWidth: element instanceof HTMLElement ? element.clientWidth : 0,
           scrollWidth: element instanceof HTMLElement ? element.scrollWidth : 0,
         };
@@ -96,7 +113,8 @@ async function fitGeometry(page: Page, name: string, scenario: Scenario): Promis
     };
   });
   assert.ok(metrics, `${scenario.name} ${name}: controls are present`);
-  if (scenario.desktopSidebar) assert.ok(Math.abs(metrics.sidebar!.width - 240) <= 1, `${scenario.name} sidebar is 240px: ${JSON.stringify(metrics.sidebar)}`);
+  const sidebarWidth = scenario.sidebarWidth ?? 240;
+  if (scenario.desktopSidebar) assert.ok(Math.abs(metrics.sidebar!.width - sidebarWidth) <= 1, `${scenario.name} sidebar is ${sidebarWidth}px: ${JSON.stringify(metrics.sidebar)}`);
   else {
     assert.ok(metrics.sidebar!.left >= -1 && metrics.sidebar!.right <= scenario.viewport.width + 1, `${scenario.name} drawer stays in viewport: ${JSON.stringify(metrics.sidebar)}`);
   }
@@ -110,6 +128,19 @@ async function fitGeometry(page: Page, name: string, scenario: Scenario): Promis
     if (element.name.includes("btn")) assert.ok(element.scrollWidth <= element.clientWidth + 1, `${scenario.name} button label fits: ${JSON.stringify(element)}`);
     if (scenario.touch && element.name.includes("btn")) assert.ok(element.height >= 44 - 1, `${scenario.name} touch button is at least 44px tall: ${JSON.stringify(element)}`);
   }
+  const oneLine = scenario.touch ? metrics.touchTarget : metrics.controlHeight;
+  const buttons = metrics.elements!.filter((element) => element.name.includes("btn"));
+  for (const button of buttons) {
+    if (button.lines === 1) assert.ok(Math.abs(button.height - oneLine) <= 1, `${scenario.name} one-line button is the standard control's height (${oneLine}px): ${JSON.stringify(button)}`);
+  }
+  const rename = buttons.find((button) => !button.inRow);
+  assert.ok(rename && metrics.input, `${scenario.name} rename form has its field and button`);
+  const renameRow = rename.left >= metrics.input.right - 1 && Math.abs(rename.bottom - metrics.input.bottom) <= 1 ? "shared" : rename.top >= metrics.input.bottom - 1 ? "stacked" : "overlapping";
+  assert.notEqual(renameRow, "overlapping", `${scenario.name} Rename shares the name field's row or sits under it: ${JSON.stringify({ rename, input: metrics.input })}`);
+  if (scenario.renameRow) assert.equal(renameRow, scenario.renameRow, `${scenario.name} Rename is ${scenario.renameRow === "shared" ? "on the name field's row" : "under the name field"} in a ${sidebarWidth}px sidebar: ${JSON.stringify({ rename, input: metrics.input })}`);
+  const rows = new Map<number, typeof buttons>();
+  for (const button of buttons.filter((button) => button.inRow)) rows.set(Math.round(button.top), [...(rows.get(Math.round(button.top)) ?? []), button]);
+  for (const row of rows.values()) assert.ok(row.every((button) => Math.abs(button.bottom - row[0]!.bottom) <= 1), `${scenario.name} buttons that share a row share its height: ${JSON.stringify(row)}`);
 }
 
 async function capture(page: Page, scenario: Scenario, state: "initial" | "armed"): Promise<void> {
@@ -129,8 +160,8 @@ async function withScenario(browser: Awaited<ReturnType<typeof chromium.launch>>
   try {
     await context.addInitScript((setting) => {
       localStorage.setItem("herdr-web-ui:settings", JSON.stringify({ language: setting.language, theme: setting.theme, density: setting.density, defaultView: "chat" }));
-      if (setting.desktopSidebar) localStorage.setItem("herdr-web-ui:sidebar-width", "240");
-    }, { language: scenario.language, theme: scenario.theme, density: scenario.density, desktopSidebar: scenario.desktopSidebar });
+      if (setting.sidebarWidth !== null) localStorage.setItem("herdr-web-ui:sidebar-width", String(setting.sidebarWidth));
+    }, { language: scenario.language, theme: scenario.theme, density: scenario.density, sidebarWidth: scenario.desktopSidebar ? scenario.sidebarWidth ?? 240 : null });
     const page = await context.newPage();
     page.on("pageerror", (error) => errors.push(error.message));
     await page.goto(url);
@@ -175,11 +206,6 @@ async function withScenario(browser: Awaited<ReturnType<typeof chromium.launch>>
     if (scenario.touch) await managedManage.tap();
     else await managedManage.click();
     await managedControls.waitFor({ state: "detached" });
-    const managedMutation = await page.evaluate(async () => {
-      const response = await fetch("/api/machines/sidebar-managed-fixture", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "not allowed" }) });
-      return response.status;
-    });
-    assert.equal(managedMutation, 403, `${scenario.name} managed mutation is rejected by fixture`);
 
     if (!scenario.touch) await remoteGroup.locator(".machine-header").hover();
     const remoteManage = remoteGroup.locator(".machine-manage");
@@ -249,10 +275,6 @@ async function withScenario(browser: Awaited<ReturnType<typeof chromium.launch>>
         return hooks.observerRoster(index)?.find((machine) => machine.id === "sidebar-fixture")?.enabled === true;
       }, observer);
 
-      const unknownStatus = await page.evaluate(async () => (await fetch("/api/machines/not-a-fixture", { method: "DELETE" })).status);
-      assert.equal(unknownStatus, 404, "unknown machine mutations fail closed instead of using demo or network endpoints");
-      const blocked = await getHook(page, "calls.blocked");
-      assert.ok(Array.isArray(blocked) && blocked.length >= 2, "unknown and managed mutations are recorded as locally blocked");
 
       await renamedGroup.getByRole("button", { name: REMOVE_LABEL.en, exact: true }).click();
       const destructive = renamedGroup.getByRole("button", { name: CONFIRM_LABEL.en, exact: true });

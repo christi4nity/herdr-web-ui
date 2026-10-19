@@ -2190,6 +2190,15 @@ button {
   color: var(--danger-text);
 }
 
+/* hovered, a danger button keeps its tint and border: the neutral hover fill above would read as
+   the risk going away */
+@media (hover: hover) {
+  .btn-danger:hover:not(:disabled) {
+    background: var(--danger-tint);
+    border-color: var(--status-blocked);
+  }
+}
+
 .btn-ghost {
   background: transparent;
   border-color: transparent;

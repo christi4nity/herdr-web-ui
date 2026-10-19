@@ -2612,6 +2612,7 @@ export function PaneTerminal({
           () => { setPromptRefresh((key) => key + 1); return true; },
           (cause: unknown) => {
             setPromptRefresh((key) => key + 1);
+            if (cause instanceof ApiError && cause.code === "reply_unconfirmed") return t("OpenCode did not confirm the answer. Check the question before sending again.");
             return cause instanceof ApiError && cause.status === 409 ? t("The question on screen changed; check it and answer again.") : plainError(cause);
           },
         );
